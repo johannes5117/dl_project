@@ -6,12 +6,40 @@ import matplotlib.pyplot as plt
 from random import randrange
 import tensorflow as tf
 from tensorflow import initializers
+import time
 
 # custom modules
 from utils     import Options, rgb2gray
 from simulator import Simulator
 from transitionTable import TransitionTable
 
+
+### HYPERPARAMETERS
+
+# E-greedy exploration [0 = no exploration, 1 = strict exploration]
+epsilon = 1
+epsilon_min = 0.2
+epsilon_decay = 0.999995
+
+# learning rate of the optimizer, here adaptive
+learning_rate = 0.02
+
+# learning rate of the Q function [0 = no learning, 1 = only consider rewards]
+alpha = 0.5
+
+# Q learning discount factor [0 = only weight current state, 1 = weight future reward only]
+gamma = 0.8
+
+training_start = 200  # total number of steps after which network training starts
+training_interval = 5    # number of steps between subsequent training steps
+
+save_interval = 5*10**4
+print_interval = 500
+
+print_goals = False
+
+
+# color highlighting for the console
 class bcolors:
     HEADER = '\033[95m'
     OKBLUE = '\033[94m'
@@ -27,9 +55,11 @@ def reshapeInputData(input_batch, no_batches):
     input_batch = input_batch.reshape((no_batches, opt.hist_len * opt.pob_siz * opt.cub_siz * opt.pob_siz * opt.cub_siz))
     return input_batch
 
+# get one-hot encoding for next_action_batch
 def prepareNextActionBatch(input):
     value = np.argmax(input, axis=0)
     return trans.one_hot_action(value)[0,:]
+
 
 #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 # NOTE:
@@ -38,7 +68,7 @@ def prepareNextActionBatch(input):
 # you can copy this into your agent class or use it from here
 #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-def Q_loss(Q_s, action_onehot, Q_s_next, best_action_next, reward, terminal, discount=0.99):
+def Q_loss(Q_s, action_onehot, Q_s_next, best_action_next, reward, terminal, discount=gamma):
     """
     All inputs should be tensorflow variables!
     We use the following notation:
@@ -69,6 +99,7 @@ def Q_loss(Q_s, action_onehot, Q_s_next, best_action_next, reward, terminal, dis
     loss = tf.reduce_sum(tf.square(selected_q - target_q))    
     return loss
 
+# add observation to the state
 def append_to_hist(state, obs):
     """
     Add observation to the state.
@@ -76,6 +107,7 @@ def append_to_hist(state, obs):
     for i in range(state.shape[0]-1):
         state[i, :] = state[i+1, :]
     state[-1, :] = obs
+
 
 #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 # NOTE:
@@ -112,8 +144,8 @@ xn = tf.placeholder(tf.float32, shape=(opt.minibatch_size, opt.hist_len*opt.stat
 r = tf.placeholder(tf.float32, shape=(opt.minibatch_size, 1))
 term = tf.placeholder(tf.float32, shape=(opt.minibatch_size, 1))
 
+# the network definition
 def network(x):
-
     logits = tf.contrib.layers.fully_connected(x, 128, tf.nn.relu, weights_initializer=initializers.random_normal, biases_initializer=tf.zeros_initializer)
     logits2 = tf.contrib.layers.fully_connected(logits, 256, tf.nn.relu)
     logits3 = tf.contrib.layers.fully_connected(logits2, 256, tf.nn.relu)
@@ -124,49 +156,64 @@ def network(x):
 # get the output from your network
 #Q = my_network_forward_pass(x)
 #Qn =  my_network_forward_pass(xn)
+
 sess = tf.Session()
 Q = network(x)
 Qn = network(xn)
+
 # calculate the loss
 loss = Q_loss(Q, u, Qn, ustar, r, term)
 
 # setup an optimizer in tensorflow to minimize the loss
-
 sess = tf.Session()
-
 #optimizer = tf.train.GradientDescentOptimizer(learning_rate=0.001).minimize(loss)
 #train_ops = tf.contrib.layers.optimize(loss, tf.train.get_global_step(),optimizer=tf.train.AdagradOptimizer, learning_rate = 0.01)
-train_ops = tf.train.AdagradOptimizer(learning_rate=0.01).minimize(loss)
+train_ops = tf.train.AdagradOptimizer(learning_rate=learning_rate).minimize(loss)
 # lets assume we will train for a total of 1 million steps
 # this is just an example and you might want to change it
+
+# initialize all the variables, call after setting up the optimizer
 sess.run(tf.global_variables_initializer())
 
+# prepare to save the network weights
 saver = tf.train.Saver()
+
 
 steps = 1 * 10**6
 epi_step = 0
 nepisodes = 0
 
-# E-greedy exploration [0 = no exploration, 1 = strict exploration]
-epsilon = 1
-epsilon_min = 0.2
-epsilon_decay = 0.999995
+# some statistics
+loss_value = 0
+performance_stats = []
+network_stats = []
+max_step = 0
+max_last = 0
 
 
 state = sim.newGame(opt.tgt_y, opt.tgt_x)
 state_with_history = np.zeros((opt.hist_len, opt.state_siz))
 append_to_hist(state_with_history, rgb2gray(state.pob).reshape(opt.state_siz))
 next_state_with_history = np.copy(state_with_history)
-for step in range(steps):
+
+for step in range(steps+1):
     if state.terminal or epi_step >= opt.early_stop:
         epi_step = 0
+        max_step = step
         nepisodes += 1
+
+        if print_goals: print('episode: {:>4} | step:{:>7} | steps: {:>4} | epsilon {:>1.6f}'.format(nepisodes, step, max_step-max_last, epsilon))
+        performance_stats.append(np.array([nepisodes, step, max_step-max_last, epsilon]))
+        max_last = max_step
+
         # reset the game
         state = sim.newGame(opt.tgt_y, opt.tgt_x)
         # and reset the history
         state_with_history[:] = 0
         append_to_hist(state_with_history, rgb2gray(state.pob).reshape(opt.state_siz))
         next_state_with_history = np.copy(state_with_history)
+    
+    
     #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     # TODO: here you would let your agent take its action
     #       remember
@@ -191,18 +238,23 @@ for step in range(steps):
     # mark next state as current state
     state_with_history = np.copy(next_state_with_history)
     state = next_state
+    
     #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     # TODO: here you would train your agent
     #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    
     state_batch, action_batch, next_state_batch, reward_batch, terminal_batch = trans.sample_minibatch()
 
     #qvalues = sess.run([Q], feed_dict={x: reshapeInputData(state_batch, opt.minibatch_size)})
     qnvalues = sess.run([Qn], feed_dict={xn: reshapeInputData(next_state_batch, opt.minibatch_size)})
-    ergs = np.argmax(qnvalues[0], axis=1).reshape(32,1)
-    action_batch_next = np.apply_along_axis(prepareNextActionBatch, 1, ergs)
+    next_action_index = np.argmax(qnvalues[0], axis=1).reshape(32,1)
+    action_batch_next = np.apply_along_axis(prepareNextActionBatch, 1, next_action_index)
 
     #sess.run(optimizer, feed_dict = {x : state_batch, u : action_batch, ustar : action_batch_next, xn : next_state_batch, r : reward_batch, term : terminal_batch})
+    
+    # this calls the optimizer defined in train_ops once, which minimizes the loss function Q_loss by calculating [Q, Qn] with the dict provided below
     sess.run(train_ops, feed_dict = {x : state_batch, u : action_batch, ustar : action_batch_next, xn : next_state_batch, r : reward_batch, term : terminal_batch})
+
     # TODO train me here
     # this should proceed as follows:
     # 1) pre-define variables and networks as outlined above
@@ -211,20 +263,35 @@ for step in range(steps):
     # action_batch_next = CALCULATE_ME
     # 2) with that action make an update to the q values
     #    as an example this is how you could print the loss
+    
+    # calculate the loss after the training epoch
     lossVal = sess.run(loss, feed_dict = {x : state_batch, u : action_batch, ustar : action_batch_next, xn : next_state_batch, r : reward_batch, term : terminal_batch})
+    
     # update epsilon
     if epsilon > epsilon_min:
         epsilon *= epsilon_decay
-    if(step%500==0):
+    
+    # output
+    if(step % print_interval == 0):
+        network_stats.append(np.array([lossVal, random, step, epsilon]))
         if random:
-            print(bcolors.FAIL + "Loss: " + str(lossVal)+ " RandomAct?: " +str(random)+ " Steps: "+str(step)+ " Epsilon: " + str(epsilon) +bcolors.ENDC)
+            print('Loss: {:>10.3f} | RandomAct? : {:d} | Steps: {:>8d} | Epsilon: {:<1.6f}'.format(lossVal, random, step, epsilon))
         else:
-            print(bcolors.OKBLUE + "Loss: " + str(lossVal)+ " RandomAct?: " +str(random)+ " Steps: "+str(step)+ " Epsilon: " + str(epsilon) +bcolors.ENDC)
+            print('Loss: {:>10.3f} | RandomAct? : {:d} | Steps: {:>8d} | Epsilon: {:<1.6f}'.format(lossVal, random, step, epsilon))
 
-    if (step % 100000 == 0):
-        saver.save(sess,"./weights/"+str(round(step/100000))+".ckpt")
+    # save the network weights & stats
+    if (step % save_interval == 0 and step > 0):
+        i = str(round(step/save_interval))
+        filename = 'network_stats' + i + '.txt'
+        np.savetxt(filename, np.array(network_stats), delimiter=',')
+        filename = 'performance_stats' + i + '.txt'
+        np.savetxt(filename, np.array(performance_stats), delimiter=',')
+        saver.save(sess, './weights/' + i + '.ckpt')
+        print('> stats/weights saved')
+
     # TODO every once in a while you should test your agent here so that you can track its performance
 
+    # plot
     if opt.disp_on:
         if win_all is None:
             plt.subplot(121)
@@ -237,6 +304,13 @@ for step in range(steps):
         plt.pause(opt.disp_interval)
         plt.draw()
 
+# final save
+filename = 'network_stats_final' + '.txt'
+np.savetxt(filename, np.array(network_stats), delimiter=',')
+filename = 'performance_stats_final' + '.txt'
+np.savetxt(filename, np.array(performance_stats), delimiter=',')
+saver.save(sess,"./weights/weights_final.ckpt")
+print('> final stats/weights saved')
 
 # 2. perform a final test of your model and save it
 # TODO
