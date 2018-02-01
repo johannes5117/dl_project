@@ -18,14 +18,14 @@ from transitionTable import TransitionTable
 
 # E-greedy exploration [0 = no exploration, 1 = strict exploration]
 epsilon = 1
-epsilon_min = 0.2
+epsilon_min = 0.1
 epsilon_decay = 0.999995
 
 # learning rate of the optimizer, here adaptive
-learning_rate = 0.02
+learning_rate = 0.0005
 
 # learning rate of the Q function [0 = no learning, 1 = only consider rewards]
-alpha = 0.5
+# alpha = 0.5
 
 # Q learning discount factor [0 = only weight current state, 1 = weight future reward only]
 gamma = 0.8
@@ -38,6 +38,25 @@ print_interval = 500
 
 print_goals = False
 
+
+# export state with history to file for debugging
+def saveStateAsTxt(state_array):
+    state_array[state_array > 200] = 4
+    state_array[state_array > 100] = 3
+    state_array[state_array >  50] = 2
+    state_array[state_array >  10] = 1
+
+    state_array = reshapeInputData(state_array, opt.minibatch_size)
+    
+    # append history, most recent state is last
+    string = ''
+    for i in range(opt.hist_len ):
+
+        # consistent with visualization
+        string += str(np.array(state_array[0,:,:,i], dtype=np.uint8)) + '\n\n'
+
+    with open('test.txt', 'w') as textfile:
+        print(string, file=textfile)
 
 # color highlighting for the console
 class bcolors:
@@ -52,7 +71,15 @@ class bcolors:
 
 # reformat data for network input
 def reshapeInputData(input_batch, no_batches):
-    input_batch = input_batch.reshape((no_batches, opt.hist_len * opt.pob_siz * opt.cub_siz * opt.pob_siz * opt.cub_siz))
+    input_batch = input_batch.reshape((no_batches, opt.hist_len, opt.pob_siz * opt.cub_siz, opt.pob_siz * opt.cub_siz))
+    # reformat input data if convolutions are used (consistent with visual map)
+    input_batch = np.rot90(input_batch, axes=(1, 2))
+    input_batch = np.rot90(input_batch, axes=(2, 3))
+    # rotate mapview 180 degree
+    input_batch = np.rot90(input_batch, axes=(1, 2))
+    input_batch = np.rot90(input_batch, axes=(1, 2))
+
+    # input_batch = input_batch.reshape((no_batches, opt.hist_len * opt.pob_siz * opt.cub_siz * opt.pob_siz * opt.cub_siz))
     return input_batch
 
 # get one-hot encoding for next_action_batch
@@ -61,13 +88,7 @@ def prepareNextActionBatch(input):
     return trans.one_hot_action(value)[0,:]
 
 
-#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-# NOTE:
-# this is a little helper function that calculates the Q error for you
-# so that you can easily use it in tensorflow as the loss
-# you can copy this into your agent class or use it from here
-#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-
+### the loss function
 def Q_loss(Q_s, action_onehot, Q_s_next, best_action_next, reward, terminal, discount=gamma):
     """
     All inputs should be tensorflow variables!
@@ -109,17 +130,12 @@ def append_to_hist(state, obs):
     state[-1, :] = obs
 
 
-#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-# NOTE:
-# In contrast to your last exercise you DO NOT generate data before training
-# instead the TransitionTable is build up while you are training to make sure
-# that you get some data that corresponds roughly to the current policy
-# of your agent
-#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+### TRAINING
 
 # 0. initialization
 opt = Options()
 sim = Simulator(opt.map_ind, opt.cub_siz, opt.pob_siz, opt.act_num)
+
 # setup a large transitiontable that is filled during training
 maxlen = 100000
 trans = TransitionTable(opt.state_siz, opt.act_num, opt.hist_len,
@@ -130,187 +146,185 @@ if opt.disp_on:
     win_pob = None
 
 
-#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-# NOTE:
-# You should prepare your network training here. I suggest to put this into a
-# class by itself but in general what you want to do is roughly the following
-#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
 # setup placeholders for states (x) actions (u) and rewards and terminal values
-x = tf.placeholder(tf.float32, shape=(opt.minibatch_size, opt.hist_len*opt.state_siz))
+x = tf.placeholder(tf.float32, shape=(opt.minibatch_size, opt.pob_siz * opt.cub_siz, opt.pob_siz * opt.cub_siz, opt.hist_len))
 u = tf.placeholder(tf.float32, shape=(opt.minibatch_size, opt.act_num))
 ustar = tf.placeholder(tf.float32, shape=(opt.minibatch_size, opt.act_num))
-xn = tf.placeholder(tf.float32, shape=(opt.minibatch_size, opt.hist_len*opt.state_siz))
+xn = tf.placeholder(tf.float32, shape=(opt.minibatch_size, opt.pob_siz * opt.cub_siz, opt.pob_siz * opt.cub_siz, opt.hist_len))
 r = tf.placeholder(tf.float32, shape=(opt.minibatch_size, 1))
 term = tf.placeholder(tf.float32, shape=(opt.minibatch_size, 1))
 
-# the network definition
-def network(x):
-    logits = tf.contrib.layers.fully_connected(x, 128, tf.nn.relu, weights_initializer=initializers.random_normal, biases_initializer=tf.zeros_initializer)
-    logits2 = tf.contrib.layers.fully_connected(logits, 256, tf.nn.relu)
-    logits3 = tf.contrib.layers.fully_connected(logits2, 256, tf.nn.relu)
-    logits4 = tf.contrib.layers.fully_connected(logits3, 5, tf.nn.relu)
-    return logits4
+### the network definition
+with tf.variable_scope('DQN', reuse=tf.AUTO_REUSE):
+    def network(x):
+        conv1 = tf.layers.conv2d(inputs=x, filters=16, kernel_size=[5, 5], padding='same', strides=2, activation=tf.nn.relu)
+        conv2 = tf.layers.conv2d(inputs=conv1, filters=32, kernel_size=[5, 5], padding='same', strides=3, activation=tf.nn.relu)
+        
+        conv2_flat = tf.layers.flatten(conv2)
+        dropout1 = tf.layers.dropout(inputs=conv2_flat, rate=0.3)
+        
+        fcon1 = tf.contrib.layers.fully_connected(dropout1, 128, tf.nn.relu, weights_initializer=initializers.random_normal, biases_initializer=tf.zeros_initializer)
+        fcon2= tf.contrib.layers.fully_connected(fcon1, 256, tf.nn.relu)
+        
+        dropout2 = tf.layers.dropout(inputs=fcon2, rate=0.5)
+        output_layer = tf.contrib.layers.fully_connected(dropout2, opt.act_num, tf.nn.relu)
+        return output_layer
 
 
 # get the output from your network
-#Q = my_network_forward_pass(x)
-#Qn =  my_network_forward_pass(xn)
 
-sess = tf.Session()
-Q = network(x)
-Qn = network(xn)
+### TRAINING ROUTINE
+with sess = tf.Session():
+    # declare the networks outputs symbolically
+    Q = network(x)
+    Qn = network(xn)
 
-# calculate the loss
-loss = Q_loss(Q, u, Qn, ustar, r, term)
+    # calculate the loss
+    loss = Q_loss(Q, u, Qn, ustar, r, term)
 
-# setup an optimizer in tensorflow to minimize the loss
-sess = tf.Session()
-#optimizer = tf.train.GradientDescentOptimizer(learning_rate=0.001).minimize(loss)
-#train_ops = tf.contrib.layers.optimize(loss, tf.train.get_global_step(),optimizer=tf.train.AdagradOptimizer, learning_rate = 0.01)
-train_ops = tf.train.AdagradOptimizer(learning_rate=learning_rate).minimize(loss)
-# lets assume we will train for a total of 1 million steps
-# this is just an example and you might want to change it
-
-# initialize all the variables, call after setting up the optimizer
-sess.run(tf.global_variables_initializer())
-
-# prepare to save the network weights
-saver = tf.train.Saver()
+    # sess = tf.Session()
+    #optimizer = tf.train.GradientDescentOptimizer(learning_rate=0.001).minimize(loss)
+    #train_ops = tf.contrib.layers.optimize(loss, tf.train.get_global_step(),optimizer=tf.train.AdagradOptimizer, learning_rate = 0.01)
 
 
-steps = 1 * 10**6
-epi_step = 0
-nepisodes = 0
+    # setup an optimizer in tensorflow to minimize the loss
+    train_ops = tf.train.AdagradOptimizer(learning_rate=learning_rate).minimize(loss)
 
-# some statistics
-loss_value = 0
-performance_stats = []
-network_stats = []
-max_step = 0
-max_last = 0
+    # initialize all the variables, call after setting up the optimizer
+    sess.run(tf.global_variables_initializer())
+
+    # prepare to save the network weights
+    saver = tf.train.Saver()
+
+    # run for some steps
+    steps = 1 * 10**6
+    epi_step = 0
+    nepisodes = 0
+
+    # some statistics
+    loss_value = 0
+    performance_stats = []
+    network_stats = []
+    max_step = 0
+    max_last = 0
 
 
-state = sim.newGame(opt.tgt_y, opt.tgt_x)
-state_with_history = np.zeros((opt.hist_len, opt.state_siz))
-append_to_hist(state_with_history, rgb2gray(state.pob).reshape(opt.state_siz))
-next_state_with_history = np.copy(state_with_history)
+    # initialize the environment
+    state = sim.newGame(opt.tgt_y, opt.tgt_x)
+    state_with_history = np.zeros((opt.hist_len, opt.state_siz))
+    append_to_hist(state_with_history, rgb2gray(state.pob).reshape(opt.state_siz))
+    next_state_with_history = np.copy(state_with_history)
 
-for step in range(steps+1):
-    if state.terminal or epi_step >= opt.early_stop:
-        epi_step = 0
-        max_step = step
-        nepisodes += 1
+    # train for <steps> steps
+    for step in range(steps+1):
+        
+        # goal check
+        if state.terminal or epi_step >= opt.early_stop:
+            epi_step = 0
+            max_step = step
+            nepisodes += 1
 
-        if print_goals: print('episode: {:>4} | step:{:>7} | steps: {:>4} | epsilon {:>1.6f}'.format(nepisodes, step, max_step-max_last, epsilon))
-        performance_stats.append(np.array([nepisodes, step, max_step-max_last, epsilon]))
-        max_last = max_step
+            if print_goals: print('episode: {:>4} | step:{:>7} | steps: {:>4} | epsilon {:>1.6f}'.format(nepisodes, step, max_step-max_last, epsilon))
+            performance_stats.append(np.array([nepisodes, step, max_step-max_last, epsilon]))
+            max_last = max_step
 
-        # reset the game
-        state = sim.newGame(opt.tgt_y, opt.tgt_x)
-        # and reset the history
-        state_with_history[:] = 0
-        append_to_hist(state_with_history, rgb2gray(state.pob).reshape(opt.state_siz))
-        next_state_with_history = np.copy(state_with_history)
-    
-    
-    #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    # TODO: here you would let your agent take its action
-    #       remember
-    #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    # this just gets a random action
-    oneput = reshapeInputData(state_with_history, 1)
-    input = np.matlib.repmat(oneput,32,1)
-    random = True
-    if np.random.rand() <= epsilon:
-        action = randrange(opt.act_num)
-    else:
-        qvalues = sess.run([Q], feed_dict={x: input})[0]
-        action = np.argmax(qvalues)
-        random = False
-
-    action_onehot = trans.one_hot_action(action)
-    next_state = sim.step(action)
-    # append to history
-    append_to_hist(next_state_with_history, rgb2gray(next_state.pob).reshape(opt.state_siz))
-    # add to the transition table
-    trans.add(state_with_history.reshape(-1), action_onehot, next_state_with_history.reshape(-1), next_state.reward, next_state.terminal)
-    # mark next state as current state
-    state_with_history = np.copy(next_state_with_history)
-    state = next_state
-    
-    #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    # TODO: here you would train your agent
-    #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    
-    state_batch, action_batch, next_state_batch, reward_batch, terminal_batch = trans.sample_minibatch()
-
-    #qvalues = sess.run([Q], feed_dict={x: reshapeInputData(state_batch, opt.minibatch_size)})
-    qnvalues = sess.run([Qn], feed_dict={xn: reshapeInputData(next_state_batch, opt.minibatch_size)})
-    next_action_index = np.argmax(qnvalues[0], axis=1).reshape(32,1)
-    action_batch_next = np.apply_along_axis(prepareNextActionBatch, 1, next_action_index)
-
-    #sess.run(optimizer, feed_dict = {x : state_batch, u : action_batch, ustar : action_batch_next, xn : next_state_batch, r : reward_batch, term : terminal_batch})
-    
-    # this calls the optimizer defined in train_ops once, which minimizes the loss function Q_loss by calculating [Q, Qn] with the dict provided below
-    sess.run(train_ops, feed_dict = {x : state_batch, u : action_batch, ustar : action_batch_next, xn : next_state_batch, r : reward_batch, term : terminal_batch})
-
-    # TODO train me here
-    # this should proceed as follows:
-    # 1) pre-define variables and networks as outlined above
-    # 1) here: calculate best action for next_state_batch
-    # TODO:
-    # action_batch_next = CALCULATE_ME
-    # 2) with that action make an update to the q values
-    #    as an example this is how you could print the loss
-    
-    # calculate the loss after the training epoch
-    lossVal = sess.run(loss, feed_dict = {x : state_batch, u : action_batch, ustar : action_batch_next, xn : next_state_batch, r : reward_batch, term : terminal_batch})
-    
-    # update epsilon
-    if epsilon > epsilon_min:
-        epsilon *= epsilon_decay
-    
-    # output
-    if(step % print_interval == 0):
-        network_stats.append(np.array([lossVal, random, step, epsilon]))
-        if random:
-            print('Loss: {:>10.3f} | RandomAct? : {:d} | Steps: {:>8d} | Epsilon: {:<1.6f}'.format(lossVal, random, step, epsilon))
+            # reset the game
+            state = sim.newGame(opt.tgt_y, opt.tgt_x)
+            # and reset the history
+            state_with_history[:] = 0
+            append_to_hist(state_with_history, rgb2gray(state.pob).reshape(opt.state_siz))
+            next_state_with_history = np.copy(state_with_history)
+        
+        epi_step += 1
+        
+        # format state for network input
+        input_reshaped = reshapeInputData(state_with_history, 1)
+        # create batch of input state
+        input_batched = np.tile(input_reshaped, (opt.minibatch_size, 1, 1, 1))
+        
+        random = True  # for stats
+        
+        ### take one action per step
+        if np.random.rand() <= epsilon:
+            action = randrange(opt.act_num)
         else:
-            print('Loss: {:>10.3f} | RandomAct? : {:d} | Steps: {:>8d} | Epsilon: {:<1.6f}'.format(lossVal, random, step, epsilon))
+            qvalues = sess.run([Q], feed_dict={x: input_batched})[0]  # take the first batch entry
+            action = np.argmax(qvalues)
+            random = False
 
-    # save the network weights & stats
-    if (step % save_interval == 0 and step > 0):
-        i = str(round(step/save_interval))
-        filename = 'network_stats' + i + '.txt'
-        np.savetxt(filename, np.array(network_stats), delimiter=',')
-        filename = 'performance_stats' + i + '.txt'
-        np.savetxt(filename, np.array(performance_stats), delimiter=',')
-        saver.save(sess, './weights/' + i + '.ckpt')
-        print('> stats/weights saved')
+        action_onehot = trans.one_hot_action(action)
+        # apply action
+        next_state = sim.step(action)
+        # append to history
+        append_to_hist(next_state_with_history, rgb2gray(next_state.pob).reshape(opt.state_siz))
+        # add to the transition table
+        trans.add(state_with_history.reshape(-1), action_onehot, next_state_with_history.reshape(-1), next_state.reward, next_state.terminal)
+        # mark next state as current state
+        state_with_history = np.copy(next_state_with_history)
+        state = next_state
+        
+        
+        ### OPTIMIZE NETWORK here
+        state_batch, action_batch, next_state_batch, reward_batch, terminal_batch = trans.sample_minibatch()
 
-    # TODO every once in a while you should test your agent here so that you can track its performance
+        state_batch = reshapeInputData(state_batch, opt.minibatch_size)
+        next_state_batch = reshapeInputData(next_state_batch, opt.minibatch_size)
+        
+        #qvalues = sess.run([Q], feed_dict={x: reshapeInputData(state_batch, opt.minibatch_size)})
+        qnvalues = sess.run([Qn], feed_dict={xn: next_state_batch})
+        next_action_index = np.argmax(qnvalues[0], axis=1).reshape(32,1)
+        # get the next best action
+        action_batch_next = np.apply_along_axis(prepareNextActionBatch, 1, next_action_index)
 
-    # plot
-    if opt.disp_on:
-        if win_all is None:
-            plt.subplot(121)
-            win_all = plt.imshow(state.screen)
-            plt.subplot(122)
-            win_pob = plt.imshow(state.pob)
-        else:
-            win_all.set_data(state.screen)
-            win_pob.set_data(state.pob)
-        plt.pause(opt.disp_interval)
-        plt.draw()
+        # this calls the optimizer defined in train_ops once, which minimizes the loss function Q_loss by calculating [Q, Qn] with the data provided below
+        sess.run(train_ops, feed_dict = {x : state_batch, u : action_batch, ustar : action_batch_next, xn : next_state_batch, r : reward_batch, term : terminal_batch})
 
-# final save
-filename = 'network_stats_final' + '.txt'
-np.savetxt(filename, np.array(network_stats), delimiter=',')
-filename = 'performance_stats_final' + '.txt'
-np.savetxt(filename, np.array(performance_stats), delimiter=',')
-saver.save(sess,"./weights/weights_final.ckpt")
-print('> final stats/weights saved')
+        # calculate the loss after the training epoch
+        lossVal = sess.run(loss, feed_dict = {x : state_batch, u : action_batch, ustar : action_batch_next, xn : next_state_batch, r : reward_batch, term : terminal_batch})
+        
+        # update epsilon
+        if epsilon > epsilon_min:
+            epsilon *= epsilon_decay
+        
+        # output
+        if(step % print_interval == 0):
+            network_stats.append(np.array([lossVal, random, step, epsilon]))
+            if random:
+                print('Loss: {:>15.3f} | random action : {:d} | Steps: {:>8d} | Epsilon: {:<1.6f}'.format(lossVal, random, step, epsilon))
+            else:
+                print('Loss: {:>15.3f} | random action : {:d} | Steps: {:>8d} | Epsilon: {:<1.6f}'.format(lossVal, random, step, epsilon))
+
+        # save the network weights & stats
+        if (step % save_interval == 0 and step > 0):
+            i = str(round(step/save_interval))
+            filename = './stats/network_stats' + i + '.txt'
+            np.savetxt(filename, np.array(network_stats), delimiter=',')
+            filename = './stats/performance_stats' + i + '.txt'
+            np.savetxt(filename, np.array(performance_stats), delimiter=',')
+            saver.save(sess, './weights/checkpoint' + i + '.ckpt')
+            print('> stats/weights saved')
+
+        # plot
+        if opt.disp_on:
+            if win_all is None:
+                plt.subplot(121)
+                win_all = plt.imshow(state.screen)
+                plt.subplot(122)
+                win_pob = plt.imshow(state.pob)
+            else:
+                win_all.set_data(state.screen)
+                win_pob.set_data(state.pob)
+            plt.pause(opt.disp_interval)
+            plt.draw()
+
+    # final save
+    filename = 'network_stats_final' + '.txt'
+    np.savetxt(filename, np.array(network_stats), delimiter=',')
+    filename = 'performance_stats_final' + '.txt'
+    np.savetxt(filename, np.array(performance_stats), delimiter=',')
+    saver.save(sess,"./weights/weights_final.ckpt")
+    print('> final stats/weights saved')
 
 # 2. perform a final test of your model and save it
 # TODO
