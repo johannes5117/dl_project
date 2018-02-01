@@ -175,7 +175,7 @@ with tf.variable_scope('DQN', reuse=tf.AUTO_REUSE):
 # get the output from your network
 
 ### TRAINING ROUTINE
-with sess = tf.Session():
+with tf.Session() as sess:
     # declare the networks outputs symbolically
     Q = network(x)
     Qn = network(xn)
