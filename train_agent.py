@@ -297,7 +297,7 @@ with tf.Session() as sess:
 
         # save the network weights & stats
         if (step % save_interval == 0 and step > 0):
-            i = str(round(step/save_interval))
+            i = str(round(step))
             filename = './stats/network_stats' + i + '.txt'
             np.savetxt(filename, np.array(network_stats), delimiter=',')
             filename = './stats/performance_stats' + i + '.txt'
