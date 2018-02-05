@@ -39,6 +39,8 @@ print_interval = 500
 print_goals = False
 
 
+### HELPTER FUNCTIONS
+
 # export state with history to file for debugging
 def saveStateAsTxt(state_array):
     state_array[state_array > 200] = 4
@@ -84,8 +86,9 @@ def reshapeInputData(input_batch, no_batches):
 
 # get one-hot encoding for next_action_batch
 def prepareNextActionBatch(input):
-    value = np.argmax(input, axis=0)
-    return trans.one_hot_action(value)[0,:]
+    # value = np.argmax(input, axis=0)
+    # print('value\n', value)
+    return trans.one_hot_action(input)[0,:]
 
 
 ### the loss function
@@ -198,7 +201,7 @@ with tf.Session() as sess:
     saver = tf.train.Saver()
 
     # run for some steps
-    steps = 1 * 10**6
+    steps = 1 * 10**5 * 5
     epi_step = 0
     nepisodes = 0
 
@@ -273,9 +276,12 @@ with tf.Session() as sess:
         
         #qvalues = sess.run([Q], feed_dict={x: reshapeInputData(state_batch, opt.minibatch_size)})
         qnvalues = sess.run([Qn], feed_dict={xn: next_state_batch})
+        # print('qn:\n', qnvalues[0])
         next_action_index = np.argmax(qnvalues[0], axis=1).reshape(32,1)
-        # get the next best action
+        # print('nai\n', next_action_index)
+        # get the next best action, one-hot encoded
         action_batch_next = np.apply_along_axis(prepareNextActionBatch, 1, next_action_index)
+        # print('abn\n', action_batch_next)
 
         # this calls the optimizer defined in train_ops once, which minimizes the loss function Q_loss by calculating [Q, Qn] with the data provided below
         sess.run(train_ops, feed_dict = {x : state_batch, u : action_batch, ustar : action_batch_next, xn : next_state_batch, r : reward_batch, term : terminal_batch})
