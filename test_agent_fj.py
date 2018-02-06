@@ -18,7 +18,7 @@ from transitionTable import TransitionTable
 plot_state = True
 
 ### weights path
-weights_name = 'weights_final500k' + '.ckpt'
+weights_name = 'weights_final' + '.ckpt'
 weights_path = './weights/' +  weights_name
 
 
@@ -144,16 +144,18 @@ maxlen = 100000
 trans = TransitionTable(opt.state_siz, opt.act_num, opt.hist_len,
                         opt.minibatch_size, maxlen)
 
-### setting up the network as in train_agent / could do that in a class for convenience
-x = tf.placeholder(tf.float32, shape=(opt.minibatch_size, opt.pob_siz * opt.cub_siz, opt.pob_siz * opt.cub_siz, opt.hist_len))
-u = tf.placeholder(tf.float32, shape=(opt.minibatch_size, opt.act_num))
-ustar = tf.placeholder(tf.float32, shape=(opt.minibatch_size, opt.act_num))
-xn = tf.placeholder(tf.float32, shape=(opt.minibatch_size, opt.pob_siz * opt.cub_siz, opt.pob_siz * opt.cub_siz, opt.hist_len))
-r = tf.placeholder(tf.float32, shape=(opt.minibatch_size, 1))
-term = tf.placeholder(tf.float32, shape=(opt.minibatch_size, 1))
+
 
 ### the network definition
 with tf.variable_scope('DQN', reuse=tf.AUTO_REUSE):
+
+    ### setting up the network as in train_agent / could do that in a class for convenience
+    x = tf.placeholder(tf.float32, shape=(opt.minibatch_size, opt.pob_siz * opt.cub_siz, opt.pob_siz * opt.cub_siz, opt.hist_len))
+    u = tf.placeholder(tf.float32, shape=(opt.minibatch_size, opt.act_num))
+    ustar = tf.placeholder(tf.float32, shape=(opt.minibatch_size, opt.act_num))
+    xn = tf.placeholder(tf.float32, shape=(opt.minibatch_size, opt.pob_siz * opt.cub_siz, opt.pob_siz * opt.cub_siz, opt.hist_len))
+    r = tf.placeholder(tf.float32, shape=(opt.minibatch_size, 1))
+    term = tf.placeholder(tf.float32, shape=(opt.minibatch_size, 1))
     def network(x):
         conv1 = tf.layers.conv2d(inputs=x, filters=16, kernel_size=[5, 5], padding='same', strides=2, activation=tf.nn.relu)
         conv2 = tf.layers.conv2d(inputs=conv1, filters=32, kernel_size=[5, 5], padding='same', strides=3, activation=tf.nn.relu)
@@ -171,92 +173,92 @@ with tf.variable_scope('DQN', reuse=tf.AUTO_REUSE):
 
 
 ### TEST ROUTINE
-with tf.Session() as sess:
-    # declare the networks outputs symbolically
-    Q = network(x)
-    # Qn = network(xn)
+    with tf.Session() as sess:
+        # declare the networks outputs symbolically
+        Q = network(x)
+        # Qn = network(xn)
 
-    # calculate the loss
-    # loss = Q_loss(Q, u, Qn, ustar, r, term)
+        # calculate the loss
+        # loss = Q_loss(Q, u, Qn, ustar, r, term)
 
-    # setup an optimizer in tensorflow to minimize the loss
-    # train_ops = tf.train.AdagradOptimizer(learning_rate=learning_rate).minimize(loss)
+        # setup an optimizer in tensorflow to minimize the loss
+        # train_ops = tf.train.AdagradOptimizer(learning_rate=learning_rate).minimize(loss)
 
-    # provide network save/restore ops
-    saver = tf.train.Saver()
+        # provide network save/restore ops
+        saver = tf.train.Saver()
 
-    # restore the trained network weights
-    saver.restore(sess, weights_path)
+        # restore the trained network weights
+        saver.restore(sess, weights_path)
 
-    # run for some steps
-    eval_episodes = 10 * 2
-    epi_step = 0
-    nepisodes = 0
-    max_step = 0
-    max_last = 0
+        # run for some steps
+        eval_episodes = 10 * 2
+        epi_step = 0
+        nepisodes = 0
+        max_step = 0
+        max_last = 0
 
 
-    # initialize the environment
-    state = sim.newGame(opt.tgt_y, opt.tgt_x)
-    state_with_history = np.zeros((opt.hist_len, opt.state_siz))
-    append_to_hist(state_with_history, rgb2gray(state.pob).reshape(opt.state_siz))
-    next_state_with_history = np.copy(state_with_history)
+        # initialize the environment
+        state = sim.newGame(opt.tgt_y, opt.tgt_x)
+        state_with_history = np.zeros((opt.hist_len, opt.state_siz))
+        append_to_hist(state_with_history, rgb2gray(state.pob).reshape(opt.state_siz))
+        next_state_with_history = np.copy(state_with_history)
 
-    # validate for some episodes
-    for e in range(eval_episodes):
-        
-        for i in range(opt.early_stop+1):
-            # goal check
-            if state.terminal or epi_step >= opt.early_stop:
-                early_stopped = False
-                if epi_step >= opt.early_stop:
-                    early_stopped = True
-                epi_step = 0
-                nepisodes += 1
-
-                if print_goals: print('episode: {:>4} | steps: {:>4} | early stop: {}'.format(e, i, early_stopped))
-
-                # reset the game
-                state = sim.newGame(opt.tgt_y, opt.tgt_x)
-                # and reset the history
-                state_with_history[:] = 0
-                append_to_hist(state_with_history, rgb2gray(state.pob).reshape(opt.state_siz))
-                next_state_with_history = np.copy(state_with_history)
-                break
-            # else
-            epi_step += 1
+        # validate for some episodes
+        for e in range(eval_episodes):
             
-            # format state for network input
-            input_reshaped = reshapeInputData(state_with_history, 1)
-            # create batch of input state
-            input_batched = np.tile(input_reshaped, (opt.minibatch_size, 1, 1, 1))
-            
-            # predict next action given current state
-            qvalues = sess.run([Q], feed_dict={x: input_batched})[0]  # take the first batch entry
-            action = np.argmax(qvalues)
-            action_onehot = trans.one_hot_action(action)
+            for i in range(opt.early_stop+1):
+                # goal check
+                if state.terminal or epi_step >= opt.early_stop:
+                    early_stopped = False
+                    if epi_step >= opt.early_stop:
+                        early_stopped = True
+                    epi_step = 0
+                    nepisodes += 1
 
-            print('> action:\t{:d}'.format(action))
-            
-            # apply action
-            next_state = sim.step(action)
-            # append to history
-            append_to_hist(next_state_with_history, rgb2gray(next_state.pob).reshape(opt.state_siz))
-            # mark next state as current state
-            state_with_history = np.copy(next_state_with_history)
-            state = next_state
+                    if print_goals: print('episode: {:>4} | steps: {:>4} | early stop: {}'.format(e, i, early_stopped))
+
+                    # reset the game
+                    state = sim.newGame(opt.tgt_y, opt.tgt_x)
+                    # and reset the history
+                    state_with_history[:] = 0
+                    append_to_hist(state_with_history, rgb2gray(state.pob).reshape(opt.state_siz))
+                    next_state_with_history = np.copy(state_with_history)
+                    break
+                # else
+                epi_step += 1
+                
+                # format state for network input
+                input_reshaped = reshapeInputData(state_with_history, 1)
+                # create batch of input state
+                input_batched = np.tile(input_reshaped, (opt.minibatch_size, 1, 1, 1))
+                
+                # predict next action given current state
+                qvalues = sess.run([Q], feed_dict={x: input_batched})[0]  # take the first batch entry
+                action = np.argmax(qvalues)
+                action_onehot = trans.one_hot_action(action)
+
+                print('> action:\t{:d}'.format(action))
+                
+                # apply action
+                next_state = sim.step(action)
+                # append to history
+                append_to_hist(next_state_with_history, rgb2gray(next_state.pob).reshape(opt.state_siz))
+                # mark next state as current state
+                state_with_history = np.copy(next_state_with_history)
+                state = next_state
 
 
-            # plot
-            if plot_state:
-                if win_all is None:
-                    plt.subplot(121)
-                    win_all = plt.imshow(state.screen)
-                    plt.subplot(122)
-                    win_pob = plt.imshow(state.pob)
-                else:
-                    win_all.set_data(state.screen)
-                    win_pob.set_data(state.pob)
-                plt.pause(opt.disp_interval)
-                plt.draw()
-                time.sleep(0.02)
+                # plot
+                if plot_state:
+                    if win_all is None:
+                        plt.subplot(121)
+                        win_all = plt.imshow(state.screen)
+                        plt.subplot(122)
+                        win_pob = plt.imshow(state.pob)
+                    else:
+                        win_all.set_data(state.screen)
+                        win_pob.set_data(state.pob)
+                    plt.pause(opt.disp_interval)
+                    plt.draw()
+                    # time.sleep(0.02)
