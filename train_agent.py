@@ -212,12 +212,6 @@ xn = tf.placeholder(tf.float32,
 r = tf.placeholder(tf.float32, shape=(opt.minibatch_size, 1))
 term = tf.placeholder(tf.float32, shape=(opt.minibatch_size, 1))
 
-# get the output from your network
-
-def copy_dqn_dqnt():
-    vars = tf.trainable_variables()
-    copy_ops = [vars[ix + len(vars) // 2].assign(var.value()) for ix, var in enumerate(vars[0:len(vars) // 2])]
-    map(lambda x: sess.run(x), copy_ops)
 
 ### TRAINING ROUTINE
 with tf.Session() as sess:
