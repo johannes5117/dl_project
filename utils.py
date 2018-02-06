@@ -10,7 +10,7 @@ class Options:
     network_fil = "network.json"
     weights_fil = "network.h5"
     # simulator config
-    disp_interval = .005
+    disp_interval = 0.5
     if map_ind == 0:
         cub_siz = 5
         pob_siz = 5 # for partial observation
@@ -24,7 +24,7 @@ class Options:
         # this defines the goal positionw
         tgt_y = 5
         tgt_x = 5
-        early_stop = 75
+        early_stop = 250
     state_siz = (pob_siz * cub_siz) ** 2 # when use pob as input
     if change_tgt:
         tgt_y = None
@@ -33,7 +33,7 @@ class Options:
 
     # traing hyper params    
     hist_len = 4
-    minibatch_size  = 32
+    minibatch_size  = 128
     eval_nepisodes  = 10
 
 class State: # return tuples made easy
