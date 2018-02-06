@@ -17,14 +17,14 @@ class Options:
         # this defines the goal positionw
         tgt_y = 12
         tgt_x = 11
-        early_stop = 50
+        early_stop = 250
     elif map_ind == 1:
         cub_siz = 10
         pob_siz = 3 # for partial observation
         # this defines the goal positionw
         tgt_y = 5
         tgt_x = 5
-        early_stop = 75
+        early_stop = 250
     state_siz = (pob_siz * cub_siz) ** 2 # when use pob as input
     if change_tgt:
         tgt_y = None
