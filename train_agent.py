@@ -1,5 +1,7 @@
 import numpy as np
 import matplotlib
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 matplotlib.use('TkAgg')
 import tensorflow as tf
@@ -20,34 +22,33 @@ def sample_noise(shape):
 
 def noisy_dense(x, size, name, bias=True, activation_fn=tf.identity):
 
-    # the function used in eq.7,8
     def f(x):
         return tf.multiply(tf.sign(x), tf.pow(tf.abs(x), 0.5))
-    # Initializer of \mu and \sigma
+
     mu_init = tf.random_uniform_initializer(minval=-1*1/np.power(x.get_shape().as_list()[1], 0.5),
                                                 maxval=1*1/np.power(x.get_shape().as_list()[1], 0.5))
     sigma_init = tf.constant_initializer(0.4/np.power(x.get_shape().as_list()[1], 0.5))
-    # Sample noise from gaussian
+
     p = sample_noise([x.get_shape().as_list()[1], 1])
-    p_var = tf.get_variable(trainable=False, name="p", initializer=p)
+    p_var = tf.get_variable(trainable=False, name=name+"p", initializer=p)
 
     q = sample_noise([1, size])
-    q_var = tf.get_variable(initializer=q,trainable=False, name="q")
+    q_var = tf.get_variable(initializer=q,trainable=False, name=name+"q")
 
-
-    f_p = f(p_var); f_q = f(q_var)
-    w_epsilon = f_p*f_q; b_epsilon = tf.squeeze(f_q)
-
+    f_p = f(p_var)
+    f_q = f(q_var)
+    w_epsilon = f_p*f_q
+    b_epsilon = tf.squeeze(f_q)
 
     # w = w_mu + w_sigma*w_epsilon
-    w_mu = tf.get_variable(name + "/w_mu", [x.get_shape()[1], size], initializer=mu_init)
-    w_sigma = tf.get_variable(name + "/w_sigma", [x.get_shape()[1], size], initializer=sigma_init)
+    w_mu = tf.get_variable(name + "/wmu", [x.get_shape()[1], size], initializer=mu_init)
+    w_sigma = tf.get_variable(name + "/wsigma", [x.get_shape()[1], size], initializer=sigma_init)
     w = w_mu + tf.multiply(w_sigma, w_epsilon)
     ret = tf.matmul(x, w)
     if bias:
         # b = b_mu + b_sigma*b_epsilon
-        b_mu = tf.get_variable(name + "/b_mu", [size], initializer=mu_init)
-        b_sigma = tf.get_variable(name + "/b_sigma", [size], initializer=sigma_init)
+        b_mu = tf.get_variable(name + "/bmu", [size], initializer=mu_init)
+        b_sigma = tf.get_variable(name + "/bsigma", [size], initializer=sigma_init)
         b = b_mu + tf.multiply(b_sigma, b_epsilon)
         return activation_fn(ret + b)
     else:
@@ -73,7 +74,7 @@ learning_rate = 0.0005
 # Q learning discount factor [0 = only weight current state, 1 = weight future reward only]
 gamma = 0.8
 
-training_start = 200  # total number of steps after which network training starts
+training_start = 2  # total number of steps after which network training starts
 training_interval = 5  # number of steps between subsequent training steps
 
 save_interval = 5 * 10 ** 4
@@ -215,22 +216,19 @@ def network(inputs, scope):
     with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
         return network_structure(inputs)
 
-def shuffle_noise():
+def shuffle_noise(scope):
     #print(tf.get_collection(tf.GraphKeys.VARIABLES, scope=trainNet_scope))
-    with tf.variable_scope(trainNet_scope, reuse=tf.AUTO_REUSE):
-        p = sample_noise(tf.get_variable('p').get_shape())
-        np = tf.get_variable(name='np', trainable=False, initializer=p)
-        runInit = tf.variables_initializer([np])
-        sess.run(runInit)
-        sess.run(tf.get_variable('p').assign(np))
-        #print(sess.run(tf.get_variable('p'))[0,0])
+    with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
+        np_op = tf.get_variable(name='noisy1p', trainable=False).assign(sample_noise(tf.get_variable('noisy1p').get_shape()))
+        nq_op = tf.get_variable(name='noisy1q', trainable=False).assign(sample_noise(tf.get_variable('noisy1q').get_shape()))
 
-        q = sample_noise(tf.get_variable('q').get_shape())
-        nq = tf.get_variable(name='nq', trainable=False, initializer=q)
-        runInit = tf.variables_initializer([nq])
-        sess.run(runInit)
-        sess.run(tf.get_variable('q').assign(nq))
-        #print(sess.run(tf.get_variable('q'))[0,0])
+        np_op2 = tf.get_variable(name='noisy2p', trainable=False).assign(
+            sample_noise(tf.get_variable('noisy2p').get_shape()))
+        nq_op2 = tf.get_variable(name='noisy2q', trainable=False).assign(
+            sample_noise(tf.get_variable('noisy2q').get_shape()))
+        sess.run([nq_op, np_op, np_op2, nq_op2])
+
+        #print(sess.run(tf.get_variable('p'))[0,0])
 
 
 # define the network structure
@@ -245,17 +243,13 @@ def network_structure(x):
 
     conv2_flat = tf.layers.flatten(conv2)
 
-    fcon1 = noisy_dense(conv2_flat, 128, "noisy1", True, tf.nn.relu)
-    dropout1 = tf.layers.dropout(inputs=fcon1, rate=0.3)
+    fcon1 = noisy_dense(conv2_flat, size=128, name="noisy1", bias=True, activation_fn=tf.nn.relu)
+    #dropout1 = tf.layers.dropout(inputs=fcon1, rate=0.3)
 
-    # fcon2= tf.contrib.layers.fully_connected(fcon1, 256, tf.nn.relu)
+    fcon2 = noisy_dense(fcon1, size=opt.act_num, name="noisy2", bias=True)
+   # dropout2 = tf.layers.dropout(inputs=fcon2, rate=0.3)
 
-    # dropout2 = tf.layers.dropout(inputs=fcon2, rate=0.5)
-    output_layer = tf.contrib.layers.fully_connected(dropout1, opt.act_num,
-                                                     weights_initializer=initializers.random_normal(mean=0.0,
-                                                                                                    stddev=0.01),
-                                                     activation_fn=None)
-    return output_layer
+    return fcon2
 
 
 ### TRAINING
@@ -323,7 +317,7 @@ with tf.Session() as sess:
     network_stats = []
     max_step = 0
     max_last = 0
-    epsilon = 0.8
+    epsilon = 0
 
     # initialize the environment
     state = sim.newGame(opt.tgt_y, opt.tgt_x)
@@ -336,6 +330,7 @@ with tf.Session() as sess:
 
         # goal check
         if state.terminal or epi_step >= opt.early_stop:
+
             max_step = step
             nepisodes += 1
             if epi_step < opt.early_stop:
@@ -362,17 +357,11 @@ with tf.Session() as sess:
         # create batch of input state
         input_batched = np.tile(input_reshaped, (opt.minibatch_size, 1, 1, 1))
 
-        random = True  # for stats
+        shuffle_noise(trainNet_scope)
 
-        ### take one action per step
-        if np.random.rand() <= epsilon:
-            action = randrange(opt.act_num)
-        else:
-            # predict using training network
-            qvalues = sess.run([Q], feed_dict={x: input_batched})[0]  # take the first batch entry
-            action = np.argmax(qvalues)
-            random = False
-
+        qvalues = sess.run([Q], feed_dict={x: input_batched})[0]  # take the first batch entry
+        action = np.argmax(qvalues)
+        random = False
         action_onehot = trans.one_hot_action(action)
         # apply action
         next_state = sim.step(action)
@@ -418,7 +407,6 @@ with tf.Session() as sess:
                                             xn: next_state_batch, r: reward_batch, term: terminal_batch})
 
 
-            shuffle_noise()
             # exit(1)
 
             # update epsilon
