@@ -29,9 +29,15 @@ def noisy_dense(x, size, name, bias=True, activation_fn=tf.identity):
     sigma_init = tf.constant_initializer(0.4/np.power(x.get_shape().as_list()[1], 0.5))
     # Sample noise from gaussian
     p = sample_noise([x.get_shape().as_list()[1], 1])
+    p_var = tf.get_variable(trainable=False, name="p", initializer=p)
+
     q = sample_noise([1, size])
-    f_p = f(p); f_q = f(q)
+    q_var = tf.get_variable(initializer=q,trainable=False, name="q")
+
+
+    f_p = f(p_var); f_q = f(q_var)
     w_epsilon = f_p*f_q; b_epsilon = tf.squeeze(f_q)
+
 
     # w = w_mu + w_sigma*w_epsilon
     w_mu = tf.get_variable(name + "/w_mu", [x.get_shape()[1], size], initializer=mu_init)
@@ -77,7 +83,16 @@ print_goals = False
 
 
 ### HELPTER FUNCTIONS
-
+def shuffle_noise(x, size):
+    def f(x):
+        return tf.multiply(tf.sign(x), tf.pow(tf.abs(x), 0.5))
+    p = sample_noise([x.get_shape().as_list()[1], 1])
+    q = sample_noise([1, size])
+    f_p = f(p);
+    f_q = f(q)
+    w_epsilon = f_p * f_q;
+    b_epsilon = tf.squeeze(f_q)
+    return w_epsilon, b_epsilon
 # export state with history to file for debugging
 def saveStateAsTxt(state_array):
     state_array[state_array > 200] = 4
@@ -200,6 +215,24 @@ def network(inputs, scope):
     with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
         return network_structure(inputs)
 
+def shuffle_noise():
+    #print(tf.get_collection(tf.GraphKeys.VARIABLES, scope=trainNet_scope))
+    with tf.variable_scope(trainNet_scope, reuse=tf.AUTO_REUSE):
+        p = sample_noise(tf.get_variable('p').get_shape())
+        np = tf.get_variable(name='np', trainable=False, initializer=p)
+        runInit = tf.variables_initializer([np])
+        sess.run(runInit)
+        sess.run(tf.get_variable('p').assign(np))
+        #print(sess.run(tf.get_variable('p'))[0,0])
+
+        q = sample_noise(tf.get_variable('q').get_shape())
+        nq = tf.get_variable(name='nq', trainable=False, initializer=q)
+        runInit = tf.variables_initializer([nq])
+        sess.run(runInit)
+        sess.run(tf.get_variable('q').assign(nq))
+        #print(sess.run(tf.get_variable('q'))[0,0])
+
+
 # define the network structure
 def network_structure(x):
     # input_layer = tf.reshape(x, [-1, opt.pob_siz * opt.cub_siz, opt.pob_siz * opt.cub_siz, opt.hist_len])
@@ -212,7 +245,7 @@ def network_structure(x):
 
     conv2_flat = tf.layers.flatten(conv2)
 
-    fcon1 = noisy_dense(conv2_flat, 128,"noisy1",  tf.nn.relu)
+    fcon1 = noisy_dense(conv2_flat, 128, "noisy1", True, tf.nn.relu)
     dropout1 = tf.layers.dropout(inputs=fcon1, rate=0.3)
 
     # fcon2= tf.contrib.layers.fully_connected(fcon1, 256, tf.nn.relu)
@@ -383,6 +416,9 @@ with tf.Session() as sess:
             # calculate the loss after the training epoch
             lossVal = sess.run(loss, feed_dict={x: state_batch, u: action_batch, ustar: action_batch_next,
                                             xn: next_state_batch, r: reward_batch, term: terminal_batch})
+
+
+            shuffle_noise()
             # exit(1)
 
             # update epsilon
