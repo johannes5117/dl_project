@@ -14,6 +14,39 @@ from utils import Options, rgb2gray
 from simulator import Simulator
 from transitionTable import TransitionTable
 
+def sample_noise(shape):
+    noise = tf.random_normal(shape)
+    return noise
+
+def noisy_dense(x, size, name, bias=True, activation_fn=tf.identity):
+
+    # the function used in eq.7,8
+    def f(x):
+        return tf.multiply(tf.sign(x), tf.pow(tf.abs(x), 0.5))
+    # Initializer of \mu and \sigma
+    mu_init = tf.random_uniform_initializer(minval=-1*1/np.power(x.get_shape().as_list()[1], 0.5),
+                                                maxval=1*1/np.power(x.get_shape().as_list()[1], 0.5))
+    sigma_init = tf.constant_initializer(0.4/np.power(x.get_shape().as_list()[1], 0.5))
+    # Sample noise from gaussian
+    p = sample_noise([x.get_shape().as_list()[1], 1])
+    q = sample_noise([1, size])
+    f_p = f(p); f_q = f(q)
+    w_epsilon = f_p*f_q; b_epsilon = tf.squeeze(f_q)
+
+    # w = w_mu + w_sigma*w_epsilon
+    w_mu = tf.get_variable(name + "/w_mu", [x.get_shape()[1], size], initializer=mu_init)
+    w_sigma = tf.get_variable(name + "/w_sigma", [x.get_shape()[1], size], initializer=sigma_init)
+    w = w_mu + tf.multiply(w_sigma, w_epsilon)
+    ret = tf.matmul(x, w)
+    if bias:
+        # b = b_mu + b_sigma*b_epsilon
+        b_mu = tf.get_variable(name + "/b_mu", [size], initializer=mu_init)
+        b_sigma = tf.get_variable(name + "/b_sigma", [size], initializer=sigma_init)
+        b = b_mu + tf.multiply(b_sigma, b_epsilon)
+        return activation_fn(ret + b)
+    else:
+        return activation_fn(ret)
+
 ### HYPERPARAMETERS
 
 # E-greedy exploration [0 = no exploration, 1 = strict exploration]
@@ -174,9 +207,7 @@ def network_network(x):
 
     conv2_flat = tf.layers.flatten(conv2)
 
-    fcon1 = tf.contrib.layers.fully_connected(conv2_flat, 128, tf.nn.relu,
-                                              weights_initializer=initializers.random_normal(mean=0.0, stddev=0.01),
-                                              biases_initializer=tf.zeros_initializer)
+    fcon1 = noisy_dense(conv2_flat, 128,"noisy1",  tf.nn.relu)
     dropout1 = tf.layers.dropout(inputs=fcon1, rate=0.3)
 
     # fcon2= tf.contrib.layers.fully_connected(fcon1, 256, tf.nn.relu)
@@ -186,6 +217,7 @@ def network_network(x):
                                                      weights_initializer=initializers.random_normal(mean=0.0,
                                                                                                     stddev=0.01),
                                                      activation_fn=None)
+
     return output_layer
 
 ### TRAINING
@@ -250,7 +282,7 @@ with tf.Session() as sess:
     network_stats = []
     max_step = 0
     max_last = 0
-    epsilon = 0.8
+    epsilon = 0
 
     update_interval = 1000
 
