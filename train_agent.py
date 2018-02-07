@@ -2,15 +2,11 @@ import numpy as np
 import matplotlib
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-
 matplotlib.use('TkAgg')
-import tensorflow as tf
 import matplotlib.pyplot as plt
-from random import randrange
 import tensorflow as tf
 from tensorflow import initializers
 import time
-
 # custom modules
 from utils import Options, rgb2gray
 from simulator import Simulator
@@ -82,18 +78,6 @@ print_interval = 500
 
 print_goals = False
 
-
-### HELPTER FUNCTIONS
-def shuffle_noise(x, size):
-    def f(x):
-        return tf.multiply(tf.sign(x), tf.pow(tf.abs(x), 0.5))
-    p = sample_noise([x.get_shape().as_list()[1], 1])
-    q = sample_noise([1, size])
-    f_p = f(p);
-    f_q = f(q)
-    w_epsilon = f_p * f_q;
-    b_epsilon = tf.squeeze(f_q)
-    return w_epsilon, b_epsilon
 # export state with history to file for debugging
 def saveStateAsTxt(state_array):
     state_array[state_array > 200] = 4
@@ -228,7 +212,7 @@ def shuffle_noise(scope):
             sample_noise(tf.get_variable('noisy2q').get_shape()))
         sess.run([nq_op, np_op, np_op2, nq_op2])
 
-        #print(sess.run(tf.get_variable('p'))[0,0])
+        # print(sess.run(tf.get_variable('noisy2q'))[0,0])
 
 
 # define the network structure
@@ -357,6 +341,7 @@ with tf.Session() as sess:
         # create batch of input state
         input_batched = np.tile(input_reshaped, (opt.minibatch_size, 1, 1, 1))
 
+        # TODO: Hier wird die Noise auf dem Noisy Layer neu gesamplet
         shuffle_noise(trainNet_scope)
 
         qvalues = sess.run([Q], feed_dict={x: input_batched})[0]  # take the first batch entry
@@ -406,14 +391,6 @@ with tf.Session() as sess:
             lossVal = sess.run(loss, feed_dict={x: state_batch, u: action_batch, ustar: action_batch_next,
                                             xn: next_state_batch, r: reward_batch, term: terminal_batch})
 
-
-            # exit(1)
-
-            # update epsilon
-            # if epsilon > epsilon_min:
-            #    epsilon *= epsilon_decay
-
-            # output
             if (step % print_interval == 0):
                 network_stats.append(np.array([step, lossVal, epsilon]))
                 print('> Training step: {:>7} \t Loss: {:>5.3f} \t Epsilon: {:<1.1f}'.format(step, lossVal, epsilon))
@@ -450,7 +427,4 @@ with tf.Session() as sess:
     np.savetxt(filename, np.array(performance_stats), delimiter=',')
     saver.save(sess, "./weights/weights_final.ckpt")
     print('> final stats/weights saved')
-
-    # 2. perform a final test of your model and save it
-    # TODO
 
