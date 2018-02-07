@@ -14,9 +14,13 @@ from utils import Options, rgb2gray
 from simulator import Simulator
 from transitionTable import TransitionTable
 
+
 ### HYPERPARAMETERS
 
-# E-greedy exploration [0 = no exploration, 1 = strict exploration]
+# frequency of target weights update
+tau = 1000
+
+# E-greedy exploration [0 = no exploration, 1 = strict exploration]  / epsilon currently fixed below!
 epsilon = 1
 epsilon_min = 0.1
 epsilon_decay = 0.999995
@@ -142,28 +146,29 @@ def append_to_hist(state, obs):
         state[i, :] = state[i + 1, :]
     state[-1, :] = obs
 
-def copy_tensor_graph_vars(src, target):
-    src_vars = tf.get_collection(
-        tf.GraphKeys.TRAINABLE_VARIABLES, scope="Qn")
-    dest_vars = tf.get_collection(
-        tf.GraphKeys.TRAINABLE_VARIABLES, scope="Qntarget")
-    assert(src_vars != dest_vars)
+# copy the weight variables from src to target scope (network)
+def get_weight_copy_ops(src, target):
+    # get the relevant variables first
+    src_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=src)
+    # print('src\n', src_vars)
+    dest_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=target)
+    # print('dest\n', dest_vars)
 
+    # store all copy operations here
+    ops = []
     for src_var, dest_var in zip(src_vars, dest_vars):
-        print("TEST")
-        dest_var.assign(src_var.value())
+        ops.append(dest_var.assign(src_var.value()))
+    return ops
 
 
 ### the network definition
-def network(x):
-    with tf.variable_scope('Qn', reuse=tf.AUTO_REUSE):
-        return network_network(x)
+# define networks and scope
+def network(inputs, scope):
+    with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
+        return network_structure(inputs)
 
-def target_network(x):
-    with tf.variable_scope('Qntarget', reuse=tf.AUTO_REUSE):
-        return network_network(x)
-
-def network_network(x):
+# define the network structure
+def network_structure(x):
     # input_layer = tf.reshape(x, [-1, opt.pob_siz * opt.cub_siz, opt.pob_siz * opt.cub_siz, opt.hist_len])
     conv1 = tf.layers.conv2d(inputs=x, filters=32, kernel_size=[5, 5], padding='valid',
                              kernel_initializer=initializers.random_normal(mean=0.0, stddev=0.01), strides=2,
@@ -188,9 +193,10 @@ def network_network(x):
                                                      activation_fn=None)
     return output_layer
 
+
 ### TRAINING
 
-# 0. initialization
+# initialization
 opt = Options()
 sim = Simulator(opt.map_ind, opt.cub_siz, opt.pob_siz, opt.act_num)
 
@@ -215,27 +221,29 @@ term = tf.placeholder(tf.float32, shape=(opt.minibatch_size, 1))
 
 ### TRAINING ROUTINE
 with tf.Session() as sess:
+    # define the network scopes
+    trainNet_scope = 'trainDQN'
+    targetNet_scope = 'targetDQN'
+    
     # declare the networks outputs symbolically
-    Q = network(x)
+    Q = network(x, trainNet_scope)
+    Qn_target = network(xn, targetNet_scope)
     # Qn = network(xn)
-    Qntarget = target_network(xn)
 
-
-
-    # calculate the loss
-    loss = Q_loss(Q, u, Qntarget, ustar, r, term)
-
-    # sess = tf.Session()
-    # optimizer = tf.train.GradientDescentOptimizer(learning_rate=0.001).minimize(loss)
-    # train_ops = tf.contrib.layers.optimize(loss, tf.train.get_global_step(),optimizer=tf.train.AdagradOptimizer, learning_rate = 0.01)
+    # calculate the loss using the target network
+    loss = Q_loss(Q, u, Qn_target, ustar, r, term)
 
     # setup an optimizer in tensorflow to minimize the loss
-    train_ops = tf.train.AdagradOptimizer(learning_rate=learning_rate).minimize(loss)
+    training_variables = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, trainNet_scope)
+    train_ops = tf.train.AdagradOptimizer(learning_rate=learning_rate).minimize(loss, var_list=training_variables)
 
     # initialize all the variables, call after setting up the optimizer
     sess.run(tf.global_variables_initializer())
+    
+    # get the copy operations to update the target network weights
+    copy_ops = get_weight_copy_ops(trainNet_scope, targetNet_scope)
+    
     # prepare to save the network weights
-    copy_tensor_graph_vars(Q, Qntarget)
     saver = tf.train.Saver()
 
     # run for some steps
@@ -251,8 +259,6 @@ with tf.Session() as sess:
     max_step = 0
     max_last = 0
     epsilon = 0.8
-
-    update_interval = 1000
 
     # initialize the environment
     state = sim.newGame(opt.tgt_y, opt.tgt_x)
@@ -273,9 +279,9 @@ with tf.Session() as sess:
             if print_goals: print(
                 'episode: {:>4} | step:{:>7} | steps: {:>4} | epsilon {:>1.6f}'.format(nepisodes, step,
                                                                                        max_step - max_last, epsilon))
-            performance_stats.append(np.array([nepisodes, step, max_step - max_last, epsilon]))
+            performance_stats.append(np.array([nepisodes, solved_episodes, epi_step, epsilon]))
             max_last = max_step
-            print("Episodes:", nepisodes, "solved", solved_episodes, "steps", epi_step)
+            print('Episodes:\t{:>6} | Solved:\t{:>4} | Steps:\t{:>7}'.format(nepisodes, solved_episodes, epi_step))
             epi_step = 0
             # reset the game
             state = sim.newGame(opt.tgt_y, opt.tgt_x)
@@ -297,6 +303,7 @@ with tf.Session() as sess:
         if np.random.rand() <= epsilon:
             action = randrange(opt.act_num)
         else:
+            # predict using training network
             qvalues = sess.run([Q], feed_dict={x: input_batched})[0]  # take the first batch entry
             action = np.argmax(qvalues)
             random = False
@@ -313,28 +320,28 @@ with tf.Session() as sess:
         state_with_history = np.copy(next_state_with_history)
         state = next_state
 
-        if (step % update_interval) == 0:
-            copy_tensor_graph_vars(Q, Qntarget)
-            print("Ich habe es geupdated Meister!")
+        # refresh the target network weights every <tau> steps
+        if (step % tau) == 0:
+            sess.run(copy_ops)
+            print('> weights updated from [{}] to [{}]'.format(trainNet_scope, targetNet_scope))
 
+
+        ### OPTIMIZE TRAINING NETWORK here
         if step >= training_start:
-            ### OPTIMIZE NETWORK here
             state_batch, action_batch, next_state_batch, reward_batch, terminal_batch = trans.sample_minibatch()
 
             state_batch = reshapeInputData(state_batch, opt.minibatch_size)
             next_state_batch = reshapeInputData(next_state_batch, opt.minibatch_size)
 
-
             qvalues = sess.run([Q], feed_dict={x: state_batch})
             # qnvalues = sess.run([Qn], feed_dict={xn: next_state_batch})
-            qnvalues = sess.run([Qntarget], feed_dict={xn: next_state_batch})
+            # sample qn values using the target network
+            qnvalues = sess.run([Qn_target], feed_dict={xn: next_state_batch})
             # print('q:\n', qvalues[0])
             # print('qn:\n', qnvalues[0])
             next_action_index = np.argmax(qnvalues[0], axis=1).reshape(opt.minibatch_size, 1)
-            # print('nai\n', next_action_index)
             # get the next best action, one-hot encoded
             action_batch_next = np.apply_along_axis(prepareNextActionBatch, 1, next_action_index)
-            # print('abn\n', action_batch_next)
 
             # this calls the optimizer defined in train_ops once, which minimizes the loss function Q_loss by calculating [Q, Qn] with the data provided below
             sess.run(train_ops,
@@ -352,17 +359,8 @@ with tf.Session() as sess:
 
             # output
             if (step % print_interval == 0):
-                network_stats.append(np.array([lossVal, random, step, epsilon]))
-                if random:
-                    print('Loss: {:>15.3f} | random action : {:d} | Steps: {:>8d} | Epsilon: {:<1.6f}'.format(lossVal,
-                                                                                                              random,
-                                                                                                              step,
-                                                                                                              epsilon))
-                else:
-                    print('Loss: {:>15.3f} | random action : {:d} | Steps: {:>8d} | Epsilon: {:<1.6f}'.format(lossVal,
-                                                                                                              random,
-                                                                                                              step,
-                                                                                                              epsilon))
+                network_stats.append(np.array([step, lossVal, epsilon]))
+                print('> Training step: {:>7} \t Loss: {:>5.3f} \t Epsilon: {:<1.1f}'.format(step, lossVal, epsilon))
 
             # save the network weights & stats
             if (step % save_interval == 0 and step > 0):
@@ -389,7 +387,7 @@ with tf.Session() as sess:
             plt.draw()
 
     # final save
-    tf.add_to_collection("Q", Q)
+    tf.add_to_collection('Q', Q)
     filename = 'network_stats_final' + '.txt'
     np.savetxt(filename, np.array(network_stats), delimiter=',')
     filename = 'performance_stats_final' + '.txt'
