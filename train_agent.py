@@ -17,6 +17,9 @@ from transitionTable import TransitionTable
 
 ### HYPERPARAMETERS
 
+# activate target network
+use_target_net = False
+
 # frequency of target weights update
 tau = 1000
 
@@ -146,7 +149,7 @@ def append_to_hist(state, obs):
         state[i, :] = state[i + 1, :]
     state[-1, :] = obs
 
-# copy the weight variables from src to target scope (network)
+# generate ops to copy the weight variables from src to target scope (network)
 def get_weight_copy_ops(src, target):
     # get the relevant variables first
     src_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=src)
@@ -227,8 +230,8 @@ with tf.Session() as sess:
     
     # declare the networks outputs symbolically
     Q = network(x, trainNet_scope)
-    Qn_target = network(xn, targetNet_scope)
-    # Qn = network(xn)
+    Qn_target = network(xn, trainNet_scope)
+    if use_target_net: Qn_target = network(xn, targetNet_scope)
 
     # calculate the loss using the target network
     loss = Q_loss(Q, u, Qn_target, ustar, r, term)
@@ -241,7 +244,8 @@ with tf.Session() as sess:
     sess.run(tf.global_variables_initializer())
     
     # get the copy operations to update the target network weights
-    copy_ops = get_weight_copy_ops(trainNet_scope, targetNet_scope)
+    copy_ops = []
+    if use_target_net: copy_ops = get_weight_copy_ops(trainNet_scope, targetNet_scope)
     
     # prepare to save the network weights
     saver = tf.train.Saver()
@@ -321,7 +325,7 @@ with tf.Session() as sess:
         state = next_state
 
         # refresh the target network weights every <tau> steps
-        if (step % tau) == 0:
+        if use_target_net and (step % tau) == 0:
             sess.run(copy_ops)
             print('> weights updated from [{}] to [{}]'.format(trainNet_scope, targetNet_scope))
 
@@ -365,7 +369,7 @@ with tf.Session() as sess:
             # save the network weights & stats
             if (step % save_interval == 0 and step > 0):
                 i = str(round(step))
-                tf.add_to_collection("Q", Q)
+                tf.add_to_collection('Q', Q)
                 filename = './stats/network_stats' + i + '.txt'
                 np.savetxt(filename, np.array(network_stats), delimiter=',')
                 filename = './stats/performance_stats' + i + '.txt'
