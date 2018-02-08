@@ -12,25 +12,29 @@ from utils import Options, rgb2gray
 from simulator import Simulator
 from transitionTable import TransitionTable
 
+# sample some noise
 def sample_noise(shape):
     noise = tf.random_normal(shape)
     return noise
 
 def noisy_dense(x, size, name, bias=True, activation_fn=tf.identity):
-
+    # noise function
     def f(x):
         return tf.multiply(tf.sign(x), tf.pow(tf.abs(x), 0.5))
 
+    # initialize mu and sigma as in the paper
     mu_init = tf.random_uniform_initializer(minval=-1*1/np.power(x.get_shape().as_list()[1], 0.5),
                                                 maxval=1*1/np.power(x.get_shape().as_list()[1], 0.5))
     sigma_init = tf.constant_initializer(0.4/np.power(x.get_shape().as_list()[1], 0.5))
 
+    # make epsilon a callable variable
     p = sample_noise([x.get_shape().as_list()[1], 1])
     p_var = tf.get_variable(trainable=False, name=name+"p", initializer=p)
 
     q = sample_noise([1, size])
     q_var = tf.get_variable(initializer=q,trainable=False, name=name+"q")
 
+    # apply factorized noise
     f_p = f(p_var)
     f_q = f(q_var)
     w_epsilon = f_p*f_q
@@ -53,6 +57,9 @@ def noisy_dense(x, size, name, bias=True, activation_fn=tf.identity):
 
 ### HYPERPARAMETERS
 
+# activate target network
+use_target_net = False
+
 # frequency of target weights update
 tau = 1000
 
@@ -70,13 +77,16 @@ learning_rate = 0.0005
 # Q learning discount factor [0 = only weight current state, 1 = weight future reward only]
 gamma = 0.8
 
-training_start = 2  # total number of steps after which network training starts
+training_start = 200  # total number of steps after which network training starts
 training_interval = 5  # number of steps between subsequent training steps
 
 save_interval = 5 * 10 ** 4
 print_interval = 500
 
 print_goals = False
+
+
+### HELPER FUNCTIONS
 
 # export state with history to file for debugging
 def saveStateAsTxt(state_array):
@@ -179,7 +189,7 @@ def append_to_hist(state, obs):
         state[i, :] = state[i + 1, :]
     state[-1, :] = obs
 
-# copy the weight variables from src to target scope (network)
+# generate ops to copy the weight variables from src to target scope (network)
 def get_weight_copy_ops(src, target):
     # get the relevant variables first
     src_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=src)
@@ -227,13 +237,81 @@ def network_structure(x):
 
     conv2_flat = tf.layers.flatten(conv2)
 
-    fcon1 = noisy_dense(conv2_flat, size=128, name="noisy1", bias=True, activation_fn=tf.nn.relu)
-    #dropout1 = tf.layers.dropout(inputs=fcon1, rate=0.3)
+    fcon1 = tf.contrib.layers.fully_connected(conv2_flat, 128, tf.nn.relu,
+                                              weights_initializer=initializers.random_normal(mean=0.0, stddev=0.01),
+                                              biases_initializer=tf.zeros_initializer)
+    dropout1 = tf.layers.dropout(inputs=fcon1, rate=0.3)
 
-    fcon2 = noisy_dense(fcon1, size=opt.act_num, name="noisy2", bias=True)
-   # dropout2 = tf.layers.dropout(inputs=fcon2, rate=0.3)
+    # fcon2= tf.contrib.layers.fully_connected(fcon1, 256, tf.nn.relu)
 
-    return fcon2
+    # dropout2 = tf.layers.dropout(inputs=fcon2, rate=0.5)
+    output_layer = tf.contrib.layers.fully_connected(dropout1, opt.act_num,
+                                                     weights_initializer=initializers.random_normal(mean=0.0,
+                                                                                                    stddev=0.01),
+                                                     activation_fn=None)
+    return output_layer
+
+def actNoisy(input_batched):
+    # shuffle_noise(trainNet_scope)
+
+    param_noise_scale = tf.get_variable("param_noise_scale", (), initializer=tf.constant_initializer(0.01), trainable=False)
+    param_noise_threshold = tf.get_variable("param_noise_threshold", (), initializer=tf.constant_initializer(0.05), trainable=False)
+    
+    # compute the q values for the different nets first
+    [qvalues, qvalues_noisy, qvalues_adaptive] = sess.run([Q, Q_noisy, Q_adaptive], feed_dict={x: input_batched})[0]
+    # qvalues_noisy = sess.run([Q_noisy], feed_dict={x: input_batched})[0]
+    # qvalues_adaptive = sess.run([Q_adaptive], feed_dict={x: input_batched})[0]
+    
+    # perturb variables of noisyNet
+    perturb_vars(trainNet_scope, noisyNet_scope)
+
+    # calculate Kullback-Leibler Divergenz 
+    kl = tf.reduce_sum(tf.nn.softmax(qvalues) * (tf.log(tf.nn.softmax(qvalues)) - tf.log(tf.nn.softmax(qvalues_adaptive))), axis=-1)  # axis right? just copied (should be however)
+    mean_kl = tf.reduce_mean(kl)
+
+    # update the noise scale -> stddev
+    if mean_kl < param_noise_threshold:
+        param_noise_scale.assign(param_noise_scale * 1.01)
+    else:
+        param_noise_scale.assign(param_noise_scale / 1.01)
+
+    # bis hierher gekommen: https://github.com/openai/baselines/blob/master/baselines/deepq/build_graph.py#L256
+    
+    
+    action = None
+    # keep epsilon of 0.01 / maybe delete
+    if np.random.rand() <= epsilon:
+        action = randrange(opt.act_num)
+    else:
+        action = np.argmax(qvalues_noisy)
+    
+    return action
+
+def perturb_vars(original_scope, perturbed_scope):
+    # grep all variables in the fully_connected layers
+    noisyLayerSelector = 'fully_connected'
+
+    all_training_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=original_scope)
+    all_perturbable_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=perturbed_scope)
+
+    # !!! TODO !!! this function should return all those variables from all_perturbable_vars which contain noisyLayerSelector (also 'fully_connected') -> alle vars der fully connected layers
+    vars_to_be_perturbed = # to implement
+
+    assert len(all_training_vars) == len(all_perturbable_vars)  # this basically just checks if the networks are of the same structure
+    # collect all ops to update the weights with noise
+    perturb_ops = []
+    for var, perturbed_var in zip(all_training_vars, all_perturbable_vars):
+        if (perturbed_var in vars_to_be_perturbed):
+            # Perturb this variable
+            op = tf.assign(perturbed_var, var + tf.random_normal(shape=tf.shape(var), mean=0., stddev=param_noise_scale))
+        else:
+            # Do not perturb, just assign
+            op = tf.assign(perturbed_var, var)
+        perturb_ops.append(op)
+    assert len(perturb_ops) == len(all_vars)
+    
+    # apply noise to the necessary variables here
+    sess.run(perturb_ops)
 
 
 ### TRAINING
@@ -266,13 +344,18 @@ with tf.Session() as sess:
     # define the network scopes
     trainNet_scope = 'trainDQN'
     targetNet_scope = 'targetDQN'
+    noisyNet_scope = 'noisyDQN'
+    adaptiveNet_scope = 'adaptiveDQN'
 
     # declare the networks outputs symbolically
     Q = network(x, trainNet_scope)
-    Qn_target = network(xn, targetNet_scope)
-    # Qn = network(xn)
-
-
+    Qn_target = network(xn, trainNet_scope)
+    if use_target_net: Qn_target = network(xn, targetNet_scope)
+    
+    # add a couple of networks for NoisyNets
+    Q_noisy = network(x, noisyNet_scope)
+    Q_adaptive = network(x, adaptiveNet_scope)
+    
     # calculate the loss using the target network
     loss = Q_loss(Q, u, Qn_target, ustar, r, term)
 
@@ -284,7 +367,8 @@ with tf.Session() as sess:
     sess.run(tf.global_variables_initializer())
 
     # get the copy operations to update the target network weights
-    copy_ops = get_weight_copy_ops(trainNet_scope, targetNet_scope)
+    copy_ops = []
+    if use_target_net: copy_ops = get_weight_copy_ops(trainNet_scope, targetNet_scope)
 
     # prepare to save the network weights
     saver = tf.train.Saver()
@@ -301,7 +385,7 @@ with tf.Session() as sess:
     network_stats = []
     max_step = 0
     max_last = 0
-    epsilon = 0
+    epsilon = 0.01
 
     # initialize the environment
     state = sim.newGame(opt.tgt_y, opt.tgt_x)
@@ -341,11 +425,15 @@ with tf.Session() as sess:
         # create batch of input state
         input_batched = np.tile(input_reshaped, (opt.minibatch_size, 1, 1, 1))
 
+        action = actNoisy(input_batched)
+        '''
         # TODO: Hier wird die Noise auf dem Noisy Layer neu gesamplet
         shuffle_noise(trainNet_scope)
 
         qvalues = sess.run([Q], feed_dict={x: input_batched})[0]  # take the first batch entry
         action = np.argmax(qvalues)
+        '''
+
         random = False
         action_onehot = trans.one_hot_action(action)
         # apply action
@@ -360,7 +448,7 @@ with tf.Session() as sess:
         state = next_state
 
         # refresh the target network weights every <tau> steps
-        if (step % tau) == 0:
+        if use_target_net and (step % tau) == 0:
             sess.run(copy_ops)
             print('> weights updated from [{}] to [{}]'.format(trainNet_scope, targetNet_scope))
 
@@ -398,7 +486,7 @@ with tf.Session() as sess:
             # save the network weights & stats
             if (step % save_interval == 0 and step > 0):
                 i = str(round(step))
-                tf.add_to_collection("Q", Q)
+                tf.add_to_collection('Q', Q)
                 filename = './stats/network_stats' + i + '.txt'
                 np.savetxt(filename, np.array(network_stats), delimiter=',')
                 filename = './stats/performance_stats' + i + '.txt'
