@@ -24,7 +24,7 @@ class Options:
         # this defines the goal positionw
         tgt_y = 5
         tgt_x = 5
-        early_stop = 75
+        early_stop = 250
     state_siz = (pob_siz * cub_siz) ** 2 # when use pob as input
     if change_tgt:
         tgt_y = None
@@ -32,8 +32,8 @@ class Options:
     act_num = 5
 
     # traing hyper params    
-    hist_len = 5
-    minibatch_size  = 16
+    hist_len = 4
+    minibatch_size  = 32
     eval_nepisodes  = 10
 
 class State: # return tuples made easy
