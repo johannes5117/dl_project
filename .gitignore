@@ -4,7 +4,7 @@ idea/
 /status/*
 /stats/*
 /.idea/*
-agent_performance.txt
+./agent_performance.txt
 performance.txt
 noisy_results/*
 /100k/weights/*
