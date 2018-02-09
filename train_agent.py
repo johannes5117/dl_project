@@ -183,7 +183,7 @@ def network_structure(x):
 
     conv2_flat = tf.layers.flatten(conv2)
 
-    fcon1 = tf.contrib.layers.fully_connected(conv2_flat, 128, tf.nn.relu,
+    fcon1 = tf.contrib.layers.fully_connected(conv2_flat, 256, tf.nn.relu,
                                               weights_initializer=initializers.random_normal(mean=0.0, stddev=0.01),
                                               biases_initializer=tf.zeros_initializer)
     dropout1 = tf.layers.dropout(inputs=fcon1, rate=0.3)
@@ -230,7 +230,7 @@ def create_noisy_net(Q):
      #   param_noise_scale.assign(param_noise_scale / 1.01)
     perturb_for_adaption = perturb_vars(trainNet_scope, noisyNet_scope, param_noise_scale)
     with tf.control_dependencies([perturb_for_adaption]):
-        tf.cond(mean_kl < param_noise_threshold, lambda: param_noise_scale.assign(param_noise_scale * 1.01), lambda: param_noise_scale.assign(param_noise_scale / 1.01))
+        update_scale_expr = tf.cond(mean_kl < param_noise_threshold, lambda: param_noise_scale.assign(param_noise_scale * 1.01), lambda: param_noise_scale.assign(param_noise_scale / 1.01))
 
     # bis hierher gekommen: https://github.com/openai/baselines/blob/master/baselines/deepq/build_graph.py#L256
 
@@ -245,8 +245,8 @@ def create_noisy_net(Q):
     #   action = random.randrange(opt.act_num)
     #else:
     #   action = np.argmax(qvalues_noisy[0])
-
-    deterministic_actions = tf.argmax(qvalues_noisy, axis=1)
+    with tf.control_dependencies([update_scale_expr]):
+        deterministic_actions = tf.argmax(qvalues_noisy, axis=1)
     return deterministic_actions
 
 def perturb_vars(original_scope, perturbed_scope, param_noise_scale):
@@ -270,7 +270,7 @@ def perturb_vars(original_scope, perturbed_scope, param_noise_scale):
             op = tf.assign(perturbed_var, var)
         perturb_ops.append(op)
     assert len(perturb_ops) == len(all_training_vars)
-
+    print("aufbauen")
     # apply noise to the necessary variables here
     return  tf.group(*perturb_ops)
 
@@ -299,13 +299,9 @@ xn = tf.placeholder(tf.float32,
 r = tf.placeholder(tf.float32, shape=(opt.minibatch_size, 1))
 term = tf.placeholder(tf.float32, shape=(opt.minibatch_size, 1))
 
-config = tf.ConfigProto(
-    device_count={'CPU': 1, 'GPU': 0},
-    allow_soft_placement=True,
-    log_device_placement=False
-    )
+
 ### TRAINING ROUTINE
-with tf.Session(config=config) as sess:
+with tf.Session() as sess:
     # define the network scopes
     trainNet_scope = 'trainDQN'
     targetNet_scope = 'targetDQN'
@@ -401,6 +397,8 @@ with tf.Session(config=config) as sess:
         input_batched = np.tile(input_reshaped, (opt.minibatch_size, 1, 1, 1))
 
         action = sess.run([act_net], feed_dict={x: input_batched})
+        #with tf.variable_scope(trainNet_scope, reuse=tf.AUTO_REUSE):
+            #print(sess.run(tf.get_variable('param_noise_scale')))
         #print(action[0][0])
         '''
         # TODO: Hier wird die Noise auf dem Noisy Layer neu gesamplet
