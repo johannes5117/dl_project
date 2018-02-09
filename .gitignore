@@ -1,4 +1,11 @@
 idea/
-__pycache__/
+/__pycache__/
 /weights/checkpoint*
 /status/*
+/stats/*
+/.idea/*
+agent_performance.txt
+performance.txt
+noisy_results/*
+/100k/weights/*
+

@@ -12,6 +12,7 @@ from utils import Options, rgb2gray
 from simulator import Simulator
 from transitionTable import TransitionTable
 import random
+from agent_evaluation import AgentTester
 
 fully_connected_variables = []
 
@@ -19,7 +20,8 @@ fully_connected_variables = []
 
 # activate target network
 use_target_net = False
-
+#activate noisy network
+use_noisy_net = False
 # frequency of target weights update
 tau = 1000
 
@@ -40,44 +42,13 @@ gamma = 0.8
 training_start = 200  # total number of steps after which network training starts
 training_interval = 5  # number of steps between subsequent training steps
 
-save_interval = 5 * 10 ** 4
+save_interval = 1 * 10 ** 4
 print_interval = 500
 
 print_goals = False
 
 
 ### HELPER FUNCTIONS
-
-# export state with history to file for debugging
-def saveStateAsTxt(state_array):
-    state_array[state_array > 200] = 4
-    state_array[state_array > 100] = 3
-    state_array[state_array > 50] = 2
-    state_array[state_array > 10] = 1
-
-    state_array = reshapeInputData(state_array, opt.minibatch_size)
-
-    # append history, most recent state is last
-    string = ''
-    for i in range(opt.hist_len):
-        # consistent with visualization
-        string += str(np.array(state_array[0, :, :, i], dtype=np.uint8)) + '\n\n'
-
-    with open('test.txt', 'w') as textfile:
-        print(string, file=textfile)
-
-
-# color highlighting for the console
-class bcolors:
-    HEADER = '\033[95m'
-    OKBLUE = '\033[94m'
-    OKGREEN = '\033[92m'
-    WARNING = '\033[93m'
-    FAIL = '\033[91m'
-    ENDC = '\033[0m'
-    BOLD = '\033[1m'
-    UNDERLINE = '\033[4m'
-
 
 # reformat data for network input
 def reshapeInputData(input_batch, no_batches):
@@ -173,7 +144,6 @@ def network(inputs, scope):
 
 # define the network structure
 def network_structure(x):
-    # input_layer = tf.reshape(x, [-1, opt.pob_siz * opt.cub_siz, opt.pob_siz * opt.cub_siz, opt.hist_len])
     conv1 = tf.layers.conv2d(inputs=x, filters=32, kernel_size=[5, 5], padding='valid',
                              kernel_initializer=initializers.random_normal(mean=0.0, stddev=0.01), strides=2,
                              activation=tf.nn.relu)
@@ -183,19 +153,24 @@ def network_structure(x):
 
     conv2_flat = tf.layers.flatten(conv2)
 
-    fcon1 = tf.contrib.layers.fully_connected(conv2_flat, 256, tf.nn.relu,
+    fcon1 = tf.contrib.layers.fully_connected(conv2_flat, 128, tf.nn.relu,
                                               weights_initializer=initializers.random_normal(mean=0.0, stddev=0.01),
                                               biases_initializer=tf.zeros_initializer)
     dropout1 = tf.layers.dropout(inputs=fcon1, rate=0.3)
+    fcon2 = tf.contrib.layers.fully_connected(dropout1, 64, tf.nn.relu,
+                                              weights_initializer=initializers.random_normal(mean=0.0, stddev=0.01),
+                                              biases_initializer=tf.zeros_initializer)
 
-    # fcon2= tf.contrib.layers.fully_connected(fcon1, 256, tf.nn.relu)
-
-    # dropout2 = tf.layers.dropout(inputs=fcon2, rate=0.5)
-    output_layer = tf.contrib.layers.fully_connected(dropout1, opt.act_num,
+    dropout2 = tf.layers.dropout(inputs=fcon2, rate=0.3)
+    output_layer = tf.contrib.layers.fully_connected(dropout2, opt.act_num,
                                                      weights_initializer=initializers.random_normal(mean=0.0,
                                                                                                     stddev=0.01),
                                                      activation_fn=None)
     return output_layer
+
+def create_baseline(Q):
+    return tf.argmax(Q, axis=1)
+
 
 def create_noisy_net(Q):
     # shuffle_noise(trainNet_scope)
@@ -208,55 +183,31 @@ def create_noisy_net(Q):
         update_param_noise_scale_ph = tf.placeholder(tf.bool, (), name="update_param_noise_scale")
 
     # compute the q values for the different nets first
-    #[qvalues, qvalues_noisy, qvalues_adaptive] = sess.run([Q, Q_noisy, Q_adaptive], feed_dict={x: input_batched})
     qvalues_noisy = network(x, noisyNet_scope)
     qvalues_adaptive = network(x, adaptiveNet_scope)
     qvalues = Q
-    # qvalues_noisy = sess.run([Q_noisy], feed_dict={x: input_batched})[0]
-    # qvalues_adaptive = sess.run([Q_adaptive], feed_dict={x: input_batched})[0]
-    
-    # perturb variables of noisyNet
-    #perturb_vars(trainNet_scope, noisyNet_scope, param_noise_scale)
 
-    # calculate Kullback-Leibler Divergenz 
     kl = tf.reduce_sum(tf.nn.softmax(qvalues) * (tf.log(tf.nn.softmax(qvalues)) - tf.log(tf.nn.softmax(qvalues_adaptive))), axis=-1)  # axis right? just copied (should be however)
     mean_kl = tf.reduce_mean(kl)
-    #var_mean_kl = sess.run(mean_kl)
-    #var_noise_threshold = sess.run(param_noise_threshold)
-    # update the noise scale -> stddev
-    #if var_mean_kl < var_noise_threshold:
-    #    param_noise_scale.assign(param_noise_scale * 1.01)
-    #else:
-     #   param_noise_scale.assign(param_noise_scale / 1.01)
+
     perturb_for_adaption = perturb_vars(trainNet_scope, noisyNet_scope, param_noise_scale)
     with tf.control_dependencies([perturb_for_adaption]):
         update_scale_expr = tf.cond(mean_kl < param_noise_threshold, lambda: param_noise_scale.assign(param_noise_scale * 1.01), lambda: param_noise_scale.assign(param_noise_scale / 1.01))
 
-    # bis hierher gekommen: https://github.com/openai/baselines/blob/master/baselines/deepq/build_graph.py#L256
+    # Not implemented -> Maybe not needed for this problem
+    #update_param_noise_threshold_expr = param_noise_threshold.assign(tf.cond(update_param_noise_threshold_ph >= 0,
+    #                                                                         lambda: update_param_noise_threshold_ph,
+    #                                                                         lambda: param_noise_threshold))
 
-    update_param_noise_threshold_expr = param_noise_threshold.assign(tf.cond(update_param_noise_threshold_ph >= 0,
-                                                                             lambda: update_param_noise_threshold_ph,
-                                                                             lambda: param_noise_threshold))
-
-
-    #action = None
-    # keep epsilon of 0.01 / maybe delete
-    #if np.random.rand() <= epsilon:
-    #   action = random.randrange(opt.act_num)
-    #else:
-    #   action = np.argmax(qvalues_noisy[0])
     with tf.control_dependencies([update_scale_expr]):
         deterministic_actions = tf.argmax(qvalues_noisy, axis=1)
     return deterministic_actions
 
 def perturb_vars(original_scope, perturbed_scope, param_noise_scale):
     # grep all variables in the fully_connected layers
-    noisyLayerSelector = 'fully_connected'
-
     all_training_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=original_scope)
     all_perturbable_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=perturbed_scope)
 
-    # !!! TODO !!! this function should return all those variables from all_perturbable_vars which contain noisyLayerSelector (also 'fully_connected') -> alle vars der fully connected layer
     assert len(all_training_vars) == len(all_perturbable_vars)
     # we have also Convolutional Layer -> doesnt make senese: assert len(all_training_vars) == len(all_perturbable_vars)  # this basically just checks if the networks are of the same structure
     # collect all ops to update the weights with noise
@@ -270,7 +221,6 @@ def perturb_vars(original_scope, perturbed_scope, param_noise_scale):
             op = tf.assign(perturbed_var, var)
         perturb_ops.append(op)
     assert len(perturb_ops) == len(all_training_vars)
-    print("aufbauen")
     # apply noise to the necessary variables here
     return  tf.group(*perturb_ops)
 
@@ -299,7 +249,10 @@ xn = tf.placeholder(tf.float32,
 r = tf.placeholder(tf.float32, shape=(opt.minibatch_size, 1))
 term = tf.placeholder(tf.float32, shape=(opt.minibatch_size, 1))
 
-
+agent = AgentTester()
+run_hyper_results = []
+start = time.time()
+last_time = 0
 ### TRAINING ROUTINE
 with tf.Session() as sess:
     # define the network scopes
@@ -314,9 +267,11 @@ with tf.Session() as sess:
     if use_target_net: Qn_target = network(xn, targetNet_scope)
     
     # add a couple of networks for NoisyNets
-    #Q_noisy = network(x, noisyNet_scope)
-    #Q_adaptive = network(x, adaptiveNet_scope)
-    act_net = create_noisy_net(Q)
+    if use_noisy_net:
+        act_net = create_noisy_net(Q)
+    else:
+        act_net = create_baseline(Q)
+
     # calculate the loss using the target network
     loss = Q_loss(Q, u, Qn_target, ustar, r, term)
 
@@ -324,16 +279,6 @@ with tf.Session() as sess:
     training_variables = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, trainNet_scope)
     train_ops = tf.train.AdagradOptimizer(learning_rate=learning_rate).minimize(loss, var_list=training_variables)
 
-    '''
-    for var in training_variables:
-        if 'fully_connected' in var.name:
-            fully_connected_variables.append(var)
-
-
-    with tf.variable_scope(trainNet_scope, reuse=tf.AUTO_REUSE):
-        
-        sess.run(tf.variables_initializer([param_noise_scale, param_noise_threshold]))
-    '''
     # initialize all the variables, call after setting up the optimizer
     sess.run(tf.global_variables_initializer())
 
@@ -345,7 +290,7 @@ with tf.Session() as sess:
     saver = tf.train.Saver()
 
     # run for some steps
-    steps = 1 * 10 ** 5 * 5
+    steps = 1 * 10 ** 5
     epi_step = 0
     nepisodes = 0
     solved_episodes = 0
@@ -356,13 +301,14 @@ with tf.Session() as sess:
     network_stats = []
     max_step = 0
     max_last = 0
-    epsilon = 0.01
 
     # initialize the environment
     state = sim.newGame(opt.tgt_y, opt.tgt_x)
     state_with_history = np.zeros((opt.hist_len, opt.state_siz))
     append_to_hist(state_with_history, rgb2gray(state.pob).reshape(opt.state_siz))
     next_state_with_history = np.copy(state_with_history)
+
+    tf.add_to_collection('Q', Q)
 
     # train for <steps> steps
     for step in range(steps + 1):
@@ -396,22 +342,18 @@ with tf.Session() as sess:
         # create batch of input state
         input_batched = np.tile(input_reshaped, (opt.minibatch_size, 1, 1, 1))
 
-        action = sess.run([act_net], feed_dict={x: input_batched})
-        #with tf.variable_scope(trainNet_scope, reuse=tf.AUTO_REUSE):
-            #print(sess.run(tf.get_variable('param_noise_scale')))
-        #print(action[0][0])
-        '''
-        # TODO: Hier wird die Noise auf dem Noisy Layer neu gesamplet
-        shuffle_noise(trainNet_scope)
+        if use_noisy_net:
+            action = sess.run([act_net], feed_dict={x: input_batched})[0][0]
+        else:
+            if np.random.rand() <= epsilon:
+                action = random.randrange(opt.act_num)
+            else:
+                action = sess.run([act_net], feed_dict={x: input_batched})[0][0]
 
-        qvalues = sess.run([Q], feed_dict={x: input_batched})[0]  # take the first batch entry
-        action = np.argmax(qvalues)
-        '''
 
-        randomAct = False
-        action_onehot = trans.one_hot_action(action[0][0])
+        action_onehot = trans.one_hot_action(action)
         # apply action
-        next_state = sim.step(action[0][0])
+        next_state = sim.step(action)
         # append to history
         append_to_hist(next_state_with_history, rgb2gray(next_state.pob).reshape(opt.state_siz))
         # add to the transition table
@@ -453,20 +395,31 @@ with tf.Session() as sess:
             lossVal = sess.run(loss, feed_dict={x: state_batch, u: action_batch, ustar: action_batch_next,
                                             xn: next_state_batch, r: reward_batch, term: terminal_batch})
 
+            if not use_noisy_net:
+                if epsilon > epsilon_min:
+                    epsilon *= epsilon_decay
+
             if (step % print_interval == 0):
                 network_stats.append(np.array([step, lossVal, epsilon]))
-                print('> Training step: {:>7} \t Loss: {:>5.3f} \t Epsilon: {:<1.1f}'.format(step, lossVal, epsilon))
+                print('> Training using Noisy('+str(use_noisy_net)+'), using Target('+str(use_target_net)+') step: {:>7} \t Loss: {:>5.5f} \t Epsilon: {:<1.5f}'.format(step, lossVal, epsilon))
 
             # save the network weights & stats
             if (step % save_interval == 0 and step > 0):
+                last_time = time.time() - start
                 i = str(round(step))
-                tf.add_to_collection('Q', Q)
                 filename = './stats/network_stats' + i + '.txt'
                 np.savetxt(filename, np.array(network_stats), delimiter=',')
                 filename = './stats/performance_stats' + i + '.txt'
                 np.savetxt(filename, np.array(performance_stats), delimiter=',')
                 saver.save(sess, './weights/checkpoint' + i + '.ckpt')
                 print('> stats/weights saved')
+                run_hyper_results.append((agent.start_eval('./weights/checkpoint' + i + '.ckpt.meta', False), last_time))
+                print(run_hyper_results)
+                filename = 'agent_performance' + '.txt'
+                with open(filename, 'w') as f:
+                    for t in run_hyper_results:
+                        f.write(str(t[0][0])+'\t'+str(t[0][1])+'\t'+str(t[1])+'\n')
+                start = time.time()
 
         # plot
         if opt.disp_on:
@@ -482,7 +435,6 @@ with tf.Session() as sess:
             plt.draw()
 
     # final save
-    tf.add_to_collection('Q', Q)
     filename = 'network_stats_final' + '.txt'
     np.savetxt(filename, np.array(network_stats), delimiter=',')
     filename = 'performance_stats_final' + '.txt'

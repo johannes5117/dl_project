@@ -10,7 +10,7 @@ class Options:
     network_fil = "network.json"
     weights_fil = "network.h5"
     # simulator config
-    disp_interval = 0.5
+    disp_interval = 0.1
     if map_ind == 0:
         cub_siz = 5
         pob_siz = 5 # for partial observation

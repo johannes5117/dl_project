@@ -3,133 +3,132 @@ from tensorflow import initializers
 from utils     import Options, rgb2gray
 import numpy as np
 from utils     import Options, rgb2gray
-from simulator import Simulator
+from simulator_deterministic_start import SimulatorDeterministicStart
 from transitionTable import TransitionTable
 import matplotlib.pyplot as plt
 
-#    tf.add_to_collection("Q", Q)
+class AgentTester():
 
-def human_printable(inp_img):
-    ret = np.zeros((3,3))
-    ret[0,0] = inp_img [5,5]
-    ret[0,1] = inp_img [5,15]
-    ret[0,2] = inp_img [5,25]
-    ret[1,0] = inp_img [15,5]
-    ret[1,1] = inp_img [15,15]
-    ret[1,2] = inp_img [15,25]
-    ret[2,0] = inp_img [25,5]
-    ret[2,1] = inp_img [25,15]
-    ret[2,2] = inp_img [25,25]
-    return ret
+    def append_to_hist(self, state, obs):
+        """
+        Add observation to the state.
+        """
+        for i in range(state.shape[0]-1):
+            state[i, :] = state[i+1, :]
+        state[-1, :] = obs
+    # reformat data for network input
+    def reshapeInputData(self, input_batch, no_batches):
+        input_batch = input_batch.reshape((no_batches, self.opt.hist_len, self.opt.pob_siz * self.opt.cub_siz, self.opt.pob_siz * self.opt.cub_siz))
+        # reformat input data if convolutions are used (consistent with visual map)
+        input_batch = np.rot90(input_batch, axes=(1, 2))
+        input_batch = np.rot90(input_batch, axes=(2, 3))
+        # rotate mapview 180 degree
+        input_batch = np.rot90(input_batch, axes=(1, 2))
+        input_batch = np.rot90(input_batch, axes=(1, 2))
 
+        # input_batch = input_batch.reshape((no_batches, opt.hist_len * opt.pob_siz * opt.cub_siz * opt.pob_siz * opt.cub_siz))
+        return input_batch
 
-def append_to_hist(state, obs):
-    """
-    Add observation to the state.
-    """
-    for i in range(state.shape[0]-1):
-        state[i, :] = state[i+1, :]
-    state[-1, :] = obs
-# reformat data for network input
-def reshapeInputData(input_batch, no_batches):
-    input_batch = input_batch.reshape((no_batches, opt.hist_len, opt.pob_siz * opt.cub_siz, opt.pob_siz * opt.cub_siz))
-    # reformat input data if convolutions are used (consistent with visual map)
-    input_batch = np.rot90(input_batch, axes=(1, 2))
-    input_batch = np.rot90(input_batch, axes=(2, 3))
-    # rotate mapview 180 degree
-    input_batch = np.rot90(input_batch, axes=(1, 2))
-    input_batch = np.rot90(input_batch, axes=(1, 2))
+    def start_eval(self, speicherort, display):
+        # 0. initialization
+        self.opt = Options()
+        sim = SimulatorDeterministicStart(self.opt.map_ind, self.opt.cub_siz, self.opt.pob_siz, self.opt.act_num)
+        imported_meta = tf.train.import_meta_graph(speicherort)
 
-    # input_batch = input_batch.reshape((no_batches, opt.hist_len * opt.pob_siz * opt.cub_siz * opt.pob_siz * opt.cub_siz))
-    return input_batch
+        win_all = None
+        win_pob = None
 
-# 0. initialization
-opt = Options()
-sim = Simulator(opt.map_ind, opt.cub_siz, opt.pob_siz, opt.act_num)
-tf.reset_default_graph()
-imported_meta = tf.train.import_meta_graph("./weights/checkpoint50000.ckpt.meta")
+        def_graph = tf.get_default_graph()
 
-win_all = None
-win_pob = None
-'''
-TODO: Try to use Placeholder as input for x and fully_connected_2/Relu as output 
-'''
+        with tf.Session() as sess:
+            with tf.variable_scope("new_testing_scope", reuse=tf.AUTO_REUSE):
 
+                x = sess.graph.get_tensor_by_name('x:0')
+                Q = tf.get_collection("Q")[0]
 
+                imported_meta.restore(sess, tf.train.latest_checkpoint('./weights/'))
 
-def_graph = tf.get_default_graph()
+                maxlen = 100000
 
-with tf.Session() as sess:
-    x = sess.graph.get_tensor_by_name('x:0')
-    Q = tf.get_collection("Q")[0]
+                # initialize the environment
+                state = sim.newGame(self.opt.tgt_y, self.opt.tgt_x, 0)
+                state_with_history = np.zeros((self.opt.hist_len, self.opt.state_siz))
+                self.append_to_hist(state_with_history, rgb2gray(state.pob).reshape(self.opt.state_siz))
+                next_state_with_history = np.copy(state_with_history)
+                trans = TransitionTable(self.opt.state_siz, self.opt.act_num, self.opt.hist_len,
+                                    self.opt.minibatch_size, maxlen)
+                epi_step = 0
 
-    imported_meta.restore(sess, tf.train.latest_checkpoint('./weights/'))
+                episodes = 0
 
-    maxlen = 100000
+                solved_epoisodes = 0
 
-    # initialize the environment
-    state = sim.newGame(opt.tgt_y, opt.tgt_x)
-    state_with_history = np.zeros((opt.hist_len, opt.state_siz))
-    append_to_hist(state_with_history, rgb2gray(state.pob).reshape(opt.state_siz))
-    next_state_with_history = np.copy(state_with_history)
-    trans = TransitionTable(opt.state_siz, opt.act_num, opt.hist_len,
-                        opt.minibatch_size, maxlen)
-    epi_step = 0
+                step_sum = 0
+                # train for <steps> steps
+                while True:
 
+                    # goal check
+                    if state.terminal or epi_step >= self.opt.early_stop:
+                        if state.terminal:
+                            solved_epoisodes += 1
+                        episodes += 1
+                        step_sum = step_sum + epi_step
+                        epi_step = 0
 
-    # train for <steps> steps
-    for step in range(100 + 1):
+                        # reset the game
+                        try:
+                            state = sim.newGame(self.opt.tgt_y, self.opt.tgt_x, episodes)
+                        except:
+                            return (step_sum,solved_epoisodes)
 
-        # goal check
-        if state.terminal or epi_step >= opt.early_stop:
-            epi_step = 0
-            max_step = step
+                        # and reset the history
+                        state_with_history[:] = 0
+                        self.append_to_hist(state_with_history, rgb2gray(state.pob).reshape(self.opt.state_siz))
+                        next_state_with_history = np.copy(state_with_history)
 
+                        if display:
+                            if win_all is None:
+                                plt.subplot(121)
+                                win_all = plt.imshow(state.screen)
+                                plt.subplot(122)
+                                win_pob = plt.imshow(state.pob)
+                            else:
+                                win_all.set_data(state.screen)
+                                win_pob.set_data(state.pob)
+                            plt.pause(self.opt.disp_interval)
+                            plt.draw()
 
-            max_last = max_step
+                    epi_step += 1
 
-            # reset the game
-            state = sim.newGame(opt.tgt_y, opt.tgt_x)
-            # and reset the history
-            state_with_history[:] = 0
-            append_to_hist(state_with_history, rgb2gray(state.pob).reshape(opt.state_siz))
-            next_state_with_history = np.copy(state_with_history)
+                    # format state for network input
+                    input_reshaped = self.reshapeInputData(state_with_history, 1)
+                    # create batch of input state
+                    input_batched = np.tile(input_reshaped, (self.opt.minibatch_size, 1, 1, 1))
 
-        epi_step += 1
+                    ### take one action per step
+                    qvalues = sess.run(Q,feed_dict={x: input_batched})[0]  # take the first batch entry
+                    action = np.argmax(qvalues)
+                    action_onehot = trans.one_hot_action(action)
+                    # apply action
+                    next_state = sim.step(action)
+                    # append to history
+                    self.append_to_hist(next_state_with_history, rgb2gray(next_state.pob).reshape(self.opt.state_siz))
+                    # add to the transition table
+                    trans.add(state_with_history.reshape(-1), action_onehot, next_state_with_history.reshape(-1), next_state.reward,
+                              next_state.terminal)
+                    # mark next state as current state
+                    state_with_history = np.copy(next_state_with_history)
+                    state = next_state
 
-        # format state for network input
-        input_reshaped = reshapeInputData(state_with_history, 1)
-        # create batch of input state
-        input_batched = np.tile(input_reshaped, (opt.minibatch_size, 1, 1, 1))
-        #print(input_reshaped[0][0])
-        print(input_reshaped.shape)
-        print(human_printable(input_reshaped[0,:,:,3]))
+                    if display:
+                        if win_all is None:
+                            plt.subplot(121)
+                            win_all = plt.imshow(state.screen)
+                            plt.subplot(122)
+                            win_pob = plt.imshow(state.pob)
+                        else:
+                            win_all.set_data(state.screen)
+                            win_pob.set_data(state.pob)
+                        plt.pause(self.opt.disp_interval)
+                        plt.draw()
 
-        ### take one action per step
-        qvalues = sess.run(Q,feed_dict={x: input_batched})[0]  # take the first batch entry
-        action = np.argmax(qvalues)
-        print(action)
-        action_onehot = trans.one_hot_action(action)
-        print(action_onehot)
-        # apply action
-        next_state = sim.step(action)
-        print(next_state.reward)
-        # append to history
-        append_to_hist(next_state_with_history, rgb2gray(next_state.pob).reshape(opt.state_siz))
-        # add to the transition table
-        trans.add(state_with_history.reshape(-1), action_onehot, next_state_with_history.reshape(-1), next_state.reward,
-                  next_state.terminal)
-        # mark next state as current state
-        state_with_history = np.copy(next_state_with_history)
-        state = next_state
-
-        if win_all is None:
-            plt.subplot(121)
-            win_all = plt.imshow(state.screen)
-            plt.subplot(122)
-            win_pob = plt.imshow(state.pob)
-        else:
-            win_all.set_data(state.screen)
-            win_pob.set_data(state.pob)
-        plt.pause(opt.disp_interval)
-        plt.draw()
