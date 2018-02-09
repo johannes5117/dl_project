@@ -197,19 +197,26 @@ def network_structure(x):
                                                      activation_fn=None)
     return output_layer
 
-def actNoisy(input_batched):
+def create_noisy_net(Q):
     # shuffle_noise(trainNet_scope)
     with tf.variable_scope(trainNet_scope, reuse=tf.AUTO_REUSE):
-        param_noise_scale = tf.get_variable("param_noise_scale",  trainable=False)
-        param_noise_threshold = tf.get_variable("param_noise_threshold", trainable=False)
+        param_noise_scale = tf.get_variable("param_noise_scale", (), initializer=tf.constant_initializer(0.01),
+                                            trainable=False)
+        param_noise_threshold = tf.get_variable("param_noise_threshold", (), initializer=tf.constant_initializer(0.05),
+                                                trainable=False)
+        update_param_noise_threshold_ph = tf.placeholder(tf.float32, (), name="update_param_noise_threshold")
+        update_param_noise_scale_ph = tf.placeholder(tf.bool, (), name="update_param_noise_scale")
 
     # compute the q values for the different nets first
-    [qvalues, qvalues_noisy, qvalues_adaptive] = sess.run([Q, Q_noisy, Q_adaptive], feed_dict={x: input_batched})
+    #[qvalues, qvalues_noisy, qvalues_adaptive] = sess.run([Q, Q_noisy, Q_adaptive], feed_dict={x: input_batched})
+    qvalues_noisy = network(x, noisyNet_scope)
+    qvalues_adaptive = network(x, adaptiveNet_scope)
+    qvalues = Q
     # qvalues_noisy = sess.run([Q_noisy], feed_dict={x: input_batched})[0]
     # qvalues_adaptive = sess.run([Q_adaptive], feed_dict={x: input_batched})[0]
     
     # perturb variables of noisyNet
-    perturb_vars(trainNet_scope, noisyNet_scope, param_noise_scale)
+    #perturb_vars(trainNet_scope, noisyNet_scope, param_noise_scale)
 
     # calculate Kullback-Leibler Divergenz 
     kl = tf.reduce_sum(tf.nn.softmax(qvalues) * (tf.log(tf.nn.softmax(qvalues)) - tf.log(tf.nn.softmax(qvalues_adaptive))), axis=-1)  # axis right? just copied (should be however)
@@ -221,19 +228,26 @@ def actNoisy(input_batched):
     #    param_noise_scale.assign(param_noise_scale * 1.01)
     #else:
      #   param_noise_scale.assign(param_noise_scale / 1.01)
-    tf.cond(mean_kl < param_noise_threshold, lambda: param_noise_scale.assign(param_noise_scale * 1.01), lambda: param_noise_scale.assign(param_noise_scale / 1.01))
+    perturb_for_adaption = perturb_vars(trainNet_scope, noisyNet_scope, param_noise_scale)
+    with tf.control_dependencies([perturb_for_adaption]):
+        tf.cond(mean_kl < param_noise_threshold, lambda: param_noise_scale.assign(param_noise_scale * 1.01), lambda: param_noise_scale.assign(param_noise_scale / 1.01))
 
     # bis hierher gekommen: https://github.com/openai/baselines/blob/master/baselines/deepq/build_graph.py#L256
-    
-    
-    action = None
+
+    update_param_noise_threshold_expr = param_noise_threshold.assign(tf.cond(update_param_noise_threshold_ph >= 0,
+                                                                             lambda: update_param_noise_threshold_ph,
+                                                                             lambda: param_noise_threshold))
+
+
+    #action = None
     # keep epsilon of 0.01 / maybe delete
-    if np.random.rand() <= epsilon:
-        action = random.randrange(opt.act_num)
-    else:
-        action = np.argmax(qvalues_noisy[0])
-    
-    return action
+    #if np.random.rand() <= epsilon:
+    #   action = random.randrange(opt.act_num)
+    #else:
+    #   action = np.argmax(qvalues_noisy[0])
+
+    deterministic_actions = tf.argmax(qvalues_noisy, axis=1)
+    return deterministic_actions
 
 def perturb_vars(original_scope, perturbed_scope, param_noise_scale):
     # grep all variables in the fully_connected layers
@@ -243,7 +257,7 @@ def perturb_vars(original_scope, perturbed_scope, param_noise_scale):
     all_perturbable_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=perturbed_scope)
 
     # !!! TODO !!! this function should return all those variables from all_perturbable_vars which contain noisyLayerSelector (also 'fully_connected') -> alle vars der fully connected layer
-
+    assert len(all_training_vars) == len(all_perturbable_vars)
     # we have also Convolutional Layer -> doesnt make senese: assert len(all_training_vars) == len(all_perturbable_vars)  # this basically just checks if the networks are of the same structure
     # collect all ops to update the weights with noise
     perturb_ops = []
@@ -255,10 +269,10 @@ def perturb_vars(original_scope, perturbed_scope, param_noise_scale):
             # Do not perturb, just assign
             op = tf.assign(perturbed_var, var)
         perturb_ops.append(op)
-    #assert len(perturb_ops) == len(all_vars)
+    assert len(perturb_ops) == len(all_training_vars)
 
     # apply noise to the necessary variables here
-    sess.run(perturb_ops)
+    return  tf.group(*perturb_ops)
 
 
 ### TRAINING
@@ -304,9 +318,9 @@ with tf.Session(config=config) as sess:
     if use_target_net: Qn_target = network(xn, targetNet_scope)
     
     # add a couple of networks for NoisyNets
-    Q_noisy = network(x, noisyNet_scope)
-    Q_adaptive = network(x, adaptiveNet_scope)
-    
+    #Q_noisy = network(x, noisyNet_scope)
+    #Q_adaptive = network(x, adaptiveNet_scope)
+    act_net = create_noisy_net(Q)
     # calculate the loss using the target network
     loss = Q_loss(Q, u, Qn_target, ustar, r, term)
 
@@ -318,15 +332,12 @@ with tf.Session(config=config) as sess:
     for var in training_variables:
         if 'fully_connected' in var.name:
             fully_connected_variables.append(var)
-    '''
+
 
     with tf.variable_scope(trainNet_scope, reuse=tf.AUTO_REUSE):
-        param_noise_scale = tf.get_variable("param_noise_scale", (), initializer=tf.constant_initializer(0.01),
-                                            trainable=False)
-        param_noise_threshold = tf.get_variable("param_noise_threshold", (), initializer=tf.constant_initializer(0.05),
-                                                trainable=False)
+        
         sess.run(tf.variables_initializer([param_noise_scale, param_noise_threshold]))
-
+    '''
     # initialize all the variables, call after setting up the optimizer
     sess.run(tf.global_variables_initializer())
 
@@ -389,7 +400,8 @@ with tf.Session(config=config) as sess:
         # create batch of input state
         input_batched = np.tile(input_reshaped, (opt.minibatch_size, 1, 1, 1))
 
-        action = actNoisy(input_batched)
+        action = sess.run([act_net], feed_dict={x: input_batched})
+        #print(action[0][0])
         '''
         # TODO: Hier wird die Noise auf dem Noisy Layer neu gesamplet
         shuffle_noise(trainNet_scope)
@@ -399,9 +411,9 @@ with tf.Session(config=config) as sess:
         '''
 
         randomAct = False
-        action_onehot = trans.one_hot_action(action)
+        action_onehot = trans.one_hot_action(action[0][0])
         # apply action
-        next_state = sim.step(action)
+        next_state = sim.step(action[0][0])
         # append to history
         append_to_hist(next_state_with_history, rgb2gray(next_state.pob).reshape(opt.state_siz))
         # add to the transition table
