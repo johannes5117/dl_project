@@ -61,6 +61,7 @@ class Simulator:
                     self.obj_pos[obj_ind][1] = x
                     obj_ind += 1
                 else:
+
                     self.fre_pos[fre_ind][0] = y
                     self.fre_pos[fre_ind][1] = x
                     fre_ind += 1
@@ -179,6 +180,8 @@ class Simulator:
         self.tgt_pos_old[0] = self.obj_pos[self.tgt_ind][0]
         self.tgt_pos_old[1] = self.obj_pos[self.tgt_ind][1]
         return self.step(0)
+
+
 
     def step(self, action):
         self.state_action = action
