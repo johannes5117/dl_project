@@ -22,6 +22,7 @@ fully_connected_variables = []
 use_target_net = False
 #activate noisy network
 use_noisy_net = False
+
 # frequency of target weights update
 tau = 1000
 
@@ -285,7 +286,7 @@ with tf.Session() as sess:
     # get the copy operations to update the target network weights
     copy_ops = []
     if use_target_net: copy_ops = get_weight_copy_ops(trainNet_scope, targetNet_scope)
-
+      
     # prepare to save the network weights
     saver = tf.train.Saver()
 
@@ -364,6 +365,7 @@ with tf.Session() as sess:
         state = next_state
 
         # refresh the target network weights every <tau> stepsy
+
         if use_target_net and (step % tau) == 0:
             sess.run(copy_ops)
             print('> weights updated from [{}] to [{}]'.format(trainNet_scope, targetNet_scope))
@@ -407,6 +409,8 @@ with tf.Session() as sess:
             if (step % save_interval == 0 and step > 0):
                 last_time = time.time() - start
                 i = str(round(step))
+
+                tf.add_to_collection('Q', Q)
                 filename = './stats/network_stats' + i + '.txt'
                 np.savetxt(filename, np.array(network_stats), delimiter=',')
                 filename = './stats/performance_stats' + i + '.txt'
